@@ -1,15 +1,19 @@
-.PHONY: help setup docs-check docs-check-selftest whitespace verify-changed
+.PHONY: help setup test docs-check docs-check-selftest whitespace verify-changed
 
 help:
 	@echo "Run every target through: nix develop --command make <target>"
 	@echo "  setup           composer install"
+	@echo "  test            PHPUnit (needs make setup)"
 	@echo "  docs-check      document-role and link gates (ADR-0001)"
 	@echo "  whitespace      whitespace errors in everything this branch changed, committed or not"
 	@echo "  docs-check-selftest  fixtures that prove docs-check fails when it should"
-	@echo "  verify-changed  whitespace + docs-check + selftest (grows with the code)"
+	@echo "  verify-changed  whitespace + docs-check + selftest + test when installed (grows with the code)"
 
 setup:
 	composer install
+
+test:
+	vendor/bin/phpunit
 
 docs-check:
 	php bin/docs-check
@@ -27,4 +31,10 @@ whitespace:
 	  GIT_INDEX_FILE=$$idx git diff --cached --check "$$base"; \
 	rc=$$?; rm -f "$$idx"; exit $$rc
 
+# The tests run when `make setup` has installed PHPUnit; otherwise the skip is reported, not silent.
 verify-changed: whitespace docs-check docs-check-selftest
+	@if [ -x vendor/bin/phpunit ]; then \
+	  $(MAKE) --no-print-directory test; \
+	else \
+	  echo "verify-changed: tests NOT run (vendor/bin/phpunit missing; run make setup)" >&2; \
+	fi

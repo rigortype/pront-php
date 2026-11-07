@@ -1,5 +1,6 @@
 /vendor/
 /tmp/
+/.phpunit.cache/
 
 # The contributor skills under `.claude/skills/` are version-controlled, but a developer's global
 # excludesfile commonly ignores `.claude` wholesale, which leaves skills tracked only because they

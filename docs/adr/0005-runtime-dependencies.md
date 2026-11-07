@@ -27,8 +27,10 @@ Facts (packagist, 2026-11-07): `phpstan/phpdoc-parser` 2.4.1 (`php ^7.4 || ^8.0`
    5.9.0). No other extension is required. `ext-mbstring` and `ext-intl` are optional and used only
    by test fixtures and comparators when present; code that needs them declares them in `suggest`.
 5. Caret ranges are used; a new major of either library is adopted by a deliberate change.
-6. Development dependencies (a test runner for Pront's own tests) are decided when the first test
-   is written, in its own change.
+6. Development dependencies: Pront's own tests run on PHPUnit `^13.4` in `require-dev` (amended
+   2026-11-08 with the first test, issue #15). It is the newest stable major; 13.4.6 was verified
+   installing and running on PHP 8.5.12 (it requires PHP `>=8.4.1`). It is dev-only, so users never
+   install it. A later major is adopted by amending this item.
 7. `composer.json` and `composer.lock` are updated in the first Stage 1 implementation change, not by
    this ADR.
 
@@ -39,6 +41,7 @@ Facts (packagist, 2026-11-07): `phpstan/phpdoc-parser` 2.4.1 (`php ^7.4 || ^8.0`
 | Depend on `phpstan/phpstan` | See ADR-0003; heavy, and its PHPDoc resolvers are not `@api`. |
 | Write a PHPDoc/PHP parser | Needless; both libraries are the standard tools. |
 | Pin exact versions | Blocks users' resolvers for no benefit before 1.0. |
+| Pest, or a custom runner, for Pront's own tests | Pest is a layer over PHPUnit that adds dependencies; a custom runner is code to maintain. |
 
 ## Consequences
 
