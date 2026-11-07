@@ -18,10 +18,12 @@ final readonly class ConstructorGenerator implements Generator
 {
     /**
      * @param class-string $class
+     * @param ArgumentsGenerator $arguments the constructor's arguments; a report draws them alone
+     *     to show the receiver as built, without running the constructor again
      */
     public function __construct(
-        private string $class,
-        private ArgumentsGenerator $arguments,
+        public string $class,
+        public ArgumentsGenerator $arguments,
     ) {
     }
 
