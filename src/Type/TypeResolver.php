@@ -459,8 +459,11 @@ final class TypeResolver
         $seen = [];
         foreach (self::ancestorMethods($method) as $inherited) {
             $key = $inherited->getDeclaringClass()->getName() . '::' . $inherited->getName();
-            // A method reached through several classes or traits is one source.
-            $identity = $inherited->getFileName() . ':' . $inherited->getStartLine() . ':' . $inherited->getName();
+            // A method reached through several classes is one source; a trait method copied into
+            // another trait is too (same declaration). Distinct declarations are never merged.
+            $identity = $inherited->getDeclaringClass()->isTrait()
+                ? 'trait:' . $inherited->getFileName() . ':' . $inherited->getStartLine() . ':' . $inherited->getName()
+                : $key;
             if (isset($seen[$identity])) {
                 continue;
             }
@@ -510,10 +513,9 @@ final class TypeResolver
     }
 
     /**
-     * Whether an inherited slot type would change this method's: PHPStan applies an inherited
-     * PHPDoc type only when it is a subtype of the native type (`TypehintHelper::decideType`), so
-     * it matters when it is (or may be) a strict subtype. The ancestor's `static` is late-bound and
-     * is compared as this method's class. An unresolvable side is always reported.
+     * Whether an inherited slot type could change this method's: anything but an equivalent type
+     * (a restatement) is reported. The ancestor's `static` is late-bound and is compared as this
+     * method's class. An unresolvable side is always reported.
      */
     private static function narrows(?Type $theirs, ?Type $ours, \ReflectionMethod $ancestor, \ReflectionMethod $method): bool
     {
@@ -524,7 +526,9 @@ final class TypeResolver
         $theirs = self::rebaseStatic($theirs, $ancestor->getDeclaringClass()->getName(), $method->getDeclaringClass()->getName());
         $into = Subtype::check($theirs, $ours);
 
-        return $into !== Certainty::No && !($into === Certainty::Yes && Subtype::check($ours, $theirs) === Certainty::Yes);
+        // Reported unless the two are equivalent: a child that narrows natively still gets the
+        // ancestor's PHPDoc applied by PHPStan, so "not a subtype" is no reason to stay quiet.
+        return !($into === Certainty::Yes && Subtype::check($ours, $theirs) === Certainty::Yes);
     }
 
     /**

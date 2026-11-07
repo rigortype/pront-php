@@ -889,6 +889,8 @@ final class TypeResolverTest extends TestCase
                 'Contracted::m() for parameter $x would be inherited'],
             'inherited static is late-bound' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\StaticReturning',
                 'public function m(): ?self { return $this; }', 'StaticReturning::m() for return type would be inherited'],
+            'child narrows the native return' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\NarrowedReturn',
+                'public function m(): int { return 1; }', 'NarrowedReturn::m() for return type would be inherited'],
             'restated native types' => ['class Target extends \Pront\Tests\Type\Fixtures\Restating', 'public function m(int $x): void {}', null],
             'constructor by name' => ['class Target extends \Pront\Tests\Type\Fixtures\Constructed',
                 $doc('@param int $x') . 'public function __construct(int $x, int $b) {} public function m(): void {}',
@@ -942,6 +944,7 @@ final class TypeResolverTest extends TestCase
             'iterable kept beside a non-final class' => ['Circle', 'iterable|Circle', self::FX . 'Circle|unchecked(iterable)'],
             'iterable kept beside a final class' => ['Fx\\Sub\\Square', 'iterable|Fx\\Sub\\Square', self::FX . 'Sub\\Square|unchecked(iterable)'],
             'iterable overlaps a Traversable class' => ['\\ArrayObject', 'iterable|\\ArrayObject', 'ArrayObject'],
+            'iterable overlaps an interface' => ['Figure', 'iterable|Figure', self::FX . 'Shape'],
         ];
     }
 
@@ -1031,6 +1034,17 @@ final class TypeResolverTest extends TestCase
 
         self::assertSame([], self::messages($signature));
         self::assertSame('unchecked(Y)', $signature->return?->describe());
+    }
+
+    public function testInterfacesDeclaredOnOneLineAreDistinctSources(): void
+    {
+        $interfaces = 'interface J1 { public function m(): ?int; } '
+            . "interface J2 { /** @return positive-int */ public function m(): ?int; }\n";
+        $signature = (new TypeResolver())->resolve(
+            TargetFactory::method('public function m(): ?int { return null; }', $interfaces, 'class Target implements J1, J2'),
+        );
+
+        self::assertOneErrorContaining('J2::m() for return type would be inherited', $signature);
     }
 
     public function testDeepAncestorChainsResolveOnce(): void
