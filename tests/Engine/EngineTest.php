@@ -526,6 +526,9 @@ final class EngineTest extends TestCase
         yield 'constructor error (a failure)' => ['throw new F(new Res());', '', false, '{NS}\\F'];
         yield 'property rejection' => ['', '', true, 'DomainException'];
         yield 'method failure' => ['', 'throw new E(new Res());', false, '{NS}\\E'];
+        // Freeing the caught throwable throws a throwable that owns another throwing destructor.
+        yield 'constructor exception, nested' => ['throw new E(new Res2());', '', false, '{NS}\\E'];
+        yield 'method failure, nested' => ['', 'throw new E(new Res2());', false, '{NS}\\E'];
     }
 
     #[DataProvider('owningThrowables')]
@@ -540,8 +543,9 @@ final class EngineTest extends TestCase
             : null;
         [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
             'final class Res { public function __destruct() { throw new \\DomainException("res"); } }
-             final class E extends \\Exception { public function __construct(public Res $res) { parent::__construct("e"); } }
-             final class F extends \\Error { public function __construct(public Res $res) { parent::__construct("f"); } }
+             final class Res2 { public function __destruct() { throw new E(new Res()); } }
+             final class E extends \\Exception { public function __construct(public object $res) { parent::__construct("e"); } }
+             final class F extends \\Error { public function __construct(public object $res) { parent::__construct("f"); } }
              final class A {
                 public function __construct() { ' . $constructor . ' }
                 #[Verify] public function m(): void { ' . $method . ' }
@@ -559,6 +563,39 @@ final class EngineTest extends TestCase
             self::assertStringStartsWith($class . '@', (string) $outcome->signature);
         }
         self::assertNotContains('error', array_column(array_filter(Harness::records($journal->file), static fn(array $r): bool => $r['type'] === 'end'), 'outcome'));
+    }
+
+    public function testAThrowingStopAndAThrowingReceiverAreBothFreedInsideTheAttempt(): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
+            'final class Res { public static int $freed = 0; public function __destruct() { self::$freed++; throw new \\DomainException("res"); } }
+             final class A {
+                public static int $freed = 0;
+                public function __destruct() { self::$freed++; throw new \\LogicException("receiver"); }
+                #[Verify] public function m(int $x): void {}
+            }',
+        )]);
+        $namespace = $discovery->targets[0]->method->getDeclaringClass()->getNamespaceName();
+        $stopping = new class ($namespace) implements Generator {
+            public function __construct(private string $namespace) {}
+
+            public function generate(ChoiceBuffer $buffer): mixed
+            {
+                $owner = new \ArrayObject([new ($this->namespace . '\\Res')()]);
+
+                throw new Rejected('stop', previous: new \RuntimeException('owner', previous: new class ($owner) extends \Exception {
+                    public function __construct(public \ArrayObject $owner) { parent::__construct('owns'); }
+                }));
+            }
+        };
+        $target = self::withArgument($discovery->targets[0], $stopping);
+
+        $result = $engine->replay(new ReplayToken($target->name(), 1, 1, []), new DiscoveryResult([$target], [], []));
+
+        self::assertSame(OutcomeKind::Failed, $result->outcome->kind);
+        self::assertStringStartsWith('DomainException@', (string) $result->outcome->signature, 'the first throwable freed fails the attempt');
+        self::assertSame([1, 1], [($namespace . '\\Res')::$freed, ($namespace . '\\A')::$freed], 'the receiver is still freed');
+        self::assertSame('failed', Harness::records($journal->file)[1]['outcome']);
     }
 
     public function testAnInvalidChoiceOnAFreshBufferIsAProntBugButInvalidOnARecordedOne(): void

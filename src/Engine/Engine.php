@@ -313,11 +313,44 @@ final class Engine
         try {
             $trial->release();
             self::collectCycles();
-        } catch (\Throwable $failure) {
-            return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($failure, self::outerFrames($failure));
+
+            return $outcome;
+        } catch (\Throwable $caught) {
+            $outcome = self::failedBy($outcome, $caught);
         }
 
-        return $outcome;
+        return self::drop($caught, $outcome);
+    }
+
+    /**
+     * Frees `$value` (a caught throwable, a partly generated value) inside the attempt, then
+     * collects cycles. Freeing can run user destructors, which can throw a throwable that owns
+     * further user objects, and so on: each such throwable is caught and freed in turn, until a
+     * free completes, so no throwable ever leaves the engine or outlives the attempt. The first one
+     * fails the attempt, unless it already failed with its own signature.
+     */
+    private static function drop(mixed &$value, Outcome $outcome): Outcome
+    {
+        while (true) {
+            try {
+                $value = null;
+                self::collectCycles();
+
+                return $outcome;
+            } catch (\Throwable $next) {
+                $outcome = self::failedBy($outcome, $next);
+                $value = $next;
+                unset($next);
+            }
+        }
+    }
+
+    /**
+     * `$outcome` if it already failed, otherwise the failure `$throwable` signs.
+     */
+    private static function failedBy(Outcome $outcome, \Throwable $throwable): Outcome
+    {
+        return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($throwable, self::outerFrames($throwable));
     }
 
     /**
@@ -338,8 +371,8 @@ final class Engine
      * The receiver first (an instance method), then the parameters in declaration order. A
      * `Rejected` is returned as a discard with its message (the exception itself is dropped here:
      * its trace may hold generated values); a failure of user code reached while generating is
-     * returned as the failing `Outcome`. What was generated before the stop is released here; a
-     * throwable from that release (a destructor) is returned as a failure.
+     * returned as the failing `Outcome`. The caught throwable and what was generated before the
+     * stop are freed here (`drop()`).
      *
      * @throws InvalidChoice
      */
@@ -347,29 +380,26 @@ final class Engine
     {
         $receiver = null;
         $invalid = null;
+        $caught = null;
         try {
             $receiver = $target->receiver?->generate($buffer);
             $arguments = $target->arguments->generate($buffer);
-        } catch (InvalidChoice $caught) {
-            $invalid = $caught;
+        } catch (InvalidChoice $stop) {
+            $invalid = $stop;
             $outcome = Outcome::invalid();
-        } catch (Rejected $rejected) {
-            $outcome = Outcome::discarded($rejected->getMessage());
-        } catch (\Throwable $failure) {
-            $outcome = Outcome::fromThrowable($failure, self::outerFrames($failure));
+        } catch (Rejected $caught) {
+            $outcome = Outcome::discarded($caught->getMessage());
+        } catch (\Throwable $caught) {
+            $outcome = Outcome::fromThrowable($caught, self::outerFrames($caught));
         }
         if (isset($outcome)) {
-            // Release the caught throwable (it may own user objects) and what was generated before
-            // the stop (the receiver) inside the attempt; a throwable from that release is a
-            // failure of the code under test, even on an invalid candidate, so it is never lost.
-            try {
-                unset($caught, $rejected, $failure);
-                $receiver = null;
-                self::collectCycles();
-            } catch (\Throwable $release) {
-                return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($release, self::outerFrames($release));
-            }
-            if ($invalid !== null) {
+            // Free the caught throwable (it may own user objects), then what was generated before
+            // the stop (the receiver), each on its own, inside the attempt; a throwable from
+            // freeing either is a failure of the code under test, even on an invalid candidate.
+            unset($stop);
+            $outcome = self::drop($caught, $outcome);
+            $outcome = self::drop($receiver, $outcome);
+            if ($invalid !== null && $outcome->kind === OutcomeKind::Invalid) {
                 throw $invalid;
             }
 
@@ -384,26 +414,19 @@ final class Engine
 
     /**
      * Runs the property. A `Rejected` it throws is returned as a discard with its message, and the
-     * exception is dropped here, before the input is released: its trace holds the input. A
-     * throwable from dropping a caught throwable (a destructor of a user object it owns) fails the
-     * attempt, unless it already failed.
+     * exception is freed here (`drop()`), before the input is released: its trace holds the input.
      */
     private function runProperty(Target $target, Input $input): Outcome
     {
         try {
             return ($this->property)($target, $input);
-        } catch (Rejected $rejected) {
-            $outcome = Outcome::discarded($rejected->getMessage());
-        } catch (\Throwable $failure) {
-            $outcome = Outcome::fromThrowable($failure, self::outerFrames($failure));
-        }
-        try {
-            unset($rejected, $failure);
-        } catch (\Throwable $release) {
-            return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($release, self::outerFrames($release));
+        } catch (Rejected $caught) {
+            $outcome = Outcome::discarded($caught->getMessage());
+        } catch (\Throwable $caught) {
+            $outcome = Outcome::fromThrowable($caught, self::outerFrames($caught));
         }
 
-        return $outcome;
+        return self::drop($caught, $outcome);
     }
 
     /**
