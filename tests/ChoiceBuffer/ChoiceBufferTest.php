@@ -213,7 +213,7 @@ final class ChoiceBufferTest extends TestCase
     }
 
     /**
-     * PR decision 11: with no stated maximum the maximum is 16, so a larger minimum is an error for
+     * ADR-0002 section 3: with no stated maximum the maximum is 16, so a larger minimum is an error for
      * the generator layer to report, never a silent default.
      */
     public function testLengthMinimumAboveTheDefaultMaximumIsRejected(): void
