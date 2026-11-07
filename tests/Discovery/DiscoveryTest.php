@@ -713,6 +713,30 @@ final class DiscoveryTest extends TestCase
         self::assertSame(['C'], array_map($project->relative(...), array_keys($result->unverifiedUntilStage3)));
     }
 
+    public function testAnAutoloaderThatThrowsLeavesTheClassUnreported(): void
+    {
+        $project = new Project([
+            'src/A.php' => self::php('class A { #[Verify] public function m(): void {} }'),
+            'src/E.php' => self::php('final class E extends Boom {}'),
+        ]);
+        $namespace = $project->namespace;
+        $autoload = static function (string $class) use ($namespace): void {
+            if ($class === "{$namespace}\\Boom") {
+                throw new \Error('autoloader failed');
+            }
+        };
+        spl_autoload_register($autoload);
+        try {
+            $result = (new Discovery())->discover(new Config(['src']), $project->directory);
+        } finally {
+            spl_autoload_unregister($autoload);
+        }
+
+        self::assertSame([], self::errors($project, $result));
+        self::assertSame(['A::m'], self::targetNames($project, $result));
+        self::assertSame([], $result->unverifiedUntilStage3);
+    }
+
     public function testAnAbstractContractClassIsNotListedAgain(): void
     {
         [$project, $result] = self::discover([

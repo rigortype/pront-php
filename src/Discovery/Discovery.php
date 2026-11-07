@@ -102,8 +102,9 @@ final class Discovery
 
         // A chain through a class outside `paths` is followed without loading the in-scope file:
         // only its first ancestors outside the index are autoloaded, and the file is loaded only
-        // when one of them descends from a contract. An ancestor that cannot be loaded means the
-        // class can never be declared, so nothing is reported for it.
+        // when one of them descends from a contract. This relies on the project's autoloader: an
+        // ancestor it cannot load is taken to mean the class can never be declared, and nothing
+        // is reported for it.
         $extra = [];
         foreach ($index->classLikes() as $declaration) {
             if ($contracts === [] || in_array($declaration, $related, true) || in_array($declaration, $contracts, true)) {
@@ -654,10 +655,15 @@ final class Discovery
 
     private static function autoloads(string $name): bool
     {
+        self::guardFatals();
+        $previous = self::$loading;
+        self::$loading = "the autoloading of {$name}";
         try {
             return class_exists($name) || interface_exists($name) || trait_exists($name);
         } catch (\Throwable) {
             return false;
+        } finally {
+            self::$loading = $previous;
         }
     }
 
