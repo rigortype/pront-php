@@ -322,7 +322,10 @@ final class Engine
 
     /**
      * Frees values the release left in reference cycles now, inside the attempt, rather than at
-     * an arbitrary later point of the run (ADR-0004 item 5: `end` follows the release).
+     * an arbitrary later point of the run (ADR-0004 item 5: `end` follows the release). It frees
+     * every collectable cycle, so a throwing destructor of cyclic garbage left before the attempt
+     * is reported as a failure of this attempt (reported, never silent; a re-run tells it apart as
+     * flaky). Its cost grows with the live graph while roots are buffered.
      */
     private static function collectCycles(): void
     {
@@ -356,15 +359,15 @@ final class Engine
             $outcome = Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
         if (isset($outcome)) {
-            unset($caught, $rejected, $failure);
-            // Release what was generated before the stop (the receiver) inside the attempt; a
-            // throwable from that release is a failure of the code under test, even on an invalid
-            // candidate, so it is never lost.
+            // Release the caught throwable (it may own user objects) and what was generated before
+            // the stop (the receiver) inside the attempt; a throwable from that release is a
+            // failure of the code under test, even on an invalid candidate, so it is never lost.
             try {
+                unset($caught, $rejected, $failure);
                 $receiver = null;
                 self::collectCycles();
             } catch (\Throwable $release) {
-                return Outcome::fromThrowable($release, self::outerFrames($release));
+                return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($release, self::outerFrames($release));
             }
             if ($invalid !== null) {
                 throw $invalid;
@@ -381,17 +384,26 @@ final class Engine
 
     /**
      * Runs the property. A `Rejected` it throws is returned as a discard with its message, and the
-     * exception is dropped here, before the input is released: its trace holds the input.
+     * exception is dropped here, before the input is released: its trace holds the input. A
+     * throwable from dropping a caught throwable (a destructor of a user object it owns) fails the
+     * attempt, unless it already failed.
      */
     private function runProperty(Target $target, Input $input): Outcome
     {
         try {
             return ($this->property)($target, $input);
         } catch (Rejected $rejected) {
-            return Outcome::discarded($rejected->getMessage());
+            $outcome = Outcome::discarded($rejected->getMessage());
         } catch (\Throwable $failure) {
-            return Outcome::fromThrowable($failure, self::outerFrames($failure));
+            $outcome = Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
+        try {
+            unset($rejected, $failure);
+        } catch (\Throwable $release) {
+            return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($release, self::outerFrames($release));
+        }
+
+        return $outcome;
     }
 
     /**

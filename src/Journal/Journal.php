@@ -180,6 +180,8 @@ final class Journal
             try {
                 $this->write($record);
             } catch (\Throwable $failure) {
+                // Not covered by a test: making the append fail inside a shutdown function needs
+                // a full disk or a revoked descriptor.
                 if ($stderr !== null) {
                     fwrite($stderr, "Pront: could not write the {$record['type']} record to {$this->file}: {$failure->getMessage()}\n");
                 }
