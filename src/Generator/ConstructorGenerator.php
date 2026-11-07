@@ -8,8 +8,11 @@ use Pront\ChoiceBuffer\ChoiceBuffer;
 
 /**
  * An instance built through its public constructor from generated arguments (the Stage 1 subset of
- * ADR-0010 section 2: the receiver of an instance method). An `\Exception` thrown by the
- * constructor rejects the candidate (ADR-0014 section 3: a discard); an `\Error` propagates.
+ * ADR-0010 section 2: the receiver of an instance method). A constructor exception rejects the
+ * candidate (ADR-0014 section 3: a discard): an `\Exception`, or the two `\Error`s that signal a
+ * rejected argument, `\ValueError` (from a built-in) and `\AssertionError` (from `assert()`). Any
+ * other `\Error` (`TypeError`, a call to an undefined function, ...) is a bug, not an input
+ * rejection, and propagates.
  */
 final readonly class ConstructorGenerator implements Generator
 {
@@ -27,7 +30,7 @@ final readonly class ConstructorGenerator implements Generator
         $arguments = $this->arguments->generate($buffer);
         try {
             return new ($this->class)(...$arguments);
-        } catch (\Exception $exception) {
+        } catch (\Exception | \ValueError | \AssertionError $exception) {
             throw new Rejected(
                 sprintf('%s::__construct() threw %s: %s', $this->class, $exception::class, $exception->getMessage()),
                 previous: $exception,

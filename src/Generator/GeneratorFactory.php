@@ -141,10 +141,7 @@ final readonly class GeneratorFactory
     {
         $keyMembers = $type->key instanceof UnionType ? $type->key->members : [$type->key];
         foreach ($keyMembers as $member) {
-            $isKey = $member instanceof IntType
-                || $member instanceof StringType
-                || ($member instanceof LiteralType && (is_int($member->value) || is_string($member->value)));
-            if (!$isKey) {
+            if (!$member instanceof IntType && !$member instanceof StringType) {
                 throw new UngeneratableType("{$type->describe()}: the key type must be int, string or int|string");
             }
         }
@@ -153,9 +150,7 @@ final readonly class GeneratorFactory
             $this->build($type->key, true),
             static function (int $key) use ($keyMembers): bool {
                 foreach ($keyMembers as $member) {
-                    if (($member instanceof IntType && $key >= $member->min && $key <= $member->max)
-                        || ($member instanceof LiteralType && $member->value === $key)
-                    ) {
+                    if ($member instanceof IntType && $key >= $member->min && $key <= $member->max) {
                         return true;
                     }
                 }

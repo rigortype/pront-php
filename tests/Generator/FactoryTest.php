@@ -19,6 +19,9 @@ use Pront\PreRun\PreRunError;
 use Pront\Tests\Generator\Fixtures\Erroring;
 use Pront\Tests\Generator\Fixtures\Hidden;
 use Pront\Tests\Generator\Fixtures\Holder;
+use Pront\Tests\Generator\Fixtures\Mixin;
+use Pront\Tests\Generator\Fixtures\Asserting;
+use Pront\Tests\Generator\Fixtures\Validating;
 use Pront\Tests\Generator\Fixtures\Needy;
 use Pront\Tests\Generator\Fixtures\Throwing;
 use Pront\Tests\Type\Fixtures\Counter;
@@ -54,6 +57,7 @@ final class FactoryTest extends TestCase
         yield 'lone null' => [new NullType(), 'null alone'];
         yield 'unchecked' => [new UncheckedType('callable', 'not in the list'), 'not in the list'];
         yield 'float key' => [new ArrayType(new FloatType(), new IntType()), 'the key type must be'];
+        yield 'literal key' => [new ArrayType(UnionType::of(new \Pront\Type\LiteralType('5'), new \Pront\Type\LiteralType('a')), new IntType()), 'the key type must be'];
     }
 
     #[DataProvider('ungeneratable')]
@@ -118,6 +122,7 @@ final class FactoryTest extends TestCase
         yield 'private constructor' => [Hidden::class, 'is not public'];
         yield 'interface' => [\Countable::class, 'cannot be instantiated'];
         yield 'abstract class' => [Shape::class, 'cannot be instantiated'];
+        yield 'trait' => [Mixin::class, 'cannot be instantiated'];
         yield 'class-typed parameter' => [Needy::class, 'until Stage 2'];
     }
 
@@ -146,6 +151,15 @@ final class FactoryTest extends TestCase
         }
         self::assertSame(2, $throwing->generate(ChoiceBuffer::replay([[0], [2, 0]]))->n);
 
+        foreach ([Asserting::class => 'AssertionError', Validating::class => 'ValueError'] as $class => $error) {
+            try {
+                $factory->forReceiver(new \ReflectionClass($class), new TypeResolver())->generate(ChoiceBuffer::replay([]));
+                self::fail("{$class} was built");
+            } catch (Rejected $rejected) {
+                self::assertStringContainsString($error, $rejected->getMessage());
+            }
+        }
+
         $this->expectException(\TypeError::class);
         $factory->forReceiver(new \ReflectionClass(Erroring::class), new TypeResolver())->generate(ChoiceBuffer::replay([]));
     }
@@ -155,7 +169,7 @@ final class FactoryTest extends TestCase
         $discards = new Discards(2);
         self::assertSame(20, $discards->threshold);
         for ($i = 0; $i < 20; $i++) {
-            $discards->record(new Rejected($i < 15 ? 'key' : 'constructor'));
+            $discards->record(new Rejected($i < 5 ? 'constructor' : 'key'));
         }
         self::assertSame(20, $discards->count());
         $this->expectException(TooManyDiscards::class);

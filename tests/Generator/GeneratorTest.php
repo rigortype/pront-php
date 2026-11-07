@@ -170,7 +170,20 @@ final class GeneratorTest extends TestCase
     {
         $all = EdgeValues::strings(false, false);
         self::assertSame(['', ' ', '0', '00', '1.5', "\n", "\0", str_repeat('a', 1000)], array_slice($all, 0, 8));
-        self::assertSame([...EdgeValues::STRING, ...EdgeValues::INVALID_UTF8], array_values(array_diff($all, [str_repeat('a', 1000)])));
+        // ADR-0007 section 1, written out independently of EdgeValues as code points.
+        $expected = [
+            '', ' ', '0', '00', '1.5', "\n", "\0", str_repeat('a', 1000),
+            "\u{65E5}\u{672C}\u{8A9E}", "\u{9AD9}", "\u{FA11}", "\u{6C49}\u{5B57}", "\u{7B80}\u{4F53}",
+            "\u{6F22}\u{5B57}", "\u{7E41}\u{9AD4}",
+            "\u{20BB7}", "\u{29E3D}", "\u{2000B}", "\u{845B}\u{E0100}",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}", "\u{1F3F3}\u{FE0F}\u{200D}\u{1F308}",
+            "\u{1F1EF}\u{1F1F5}", "\u{1F44D}\u{1F3FD}", "\u{31}\u{FE0F}\u{20E3}", "\u{2764}\u{FE0F}",
+            "\u{65}\u{301}", "\u{304C}", "\u{304B}\u{3099}", "\u{30AB}\u{30BF}\u{30AB}\u{30CA}",
+            "\u{FF76}\u{FF80}\u{FF76}\u{FF85}", "\u{1100}\u{1161}\u{11A8}",
+            "\u{645}\u{631}\u{62D}\u{628}\u{627}", "\u{200D}", "\u{FEFF}",
+            "\xFF", "\xE6\x97",
+        ];
+        self::assertSame(array_map(bin2hex(...), $expected), array_map(bin2hex(...), $all));
         self::assertContains("\xFF", $all);
         self::assertContains("\xE6\x97", $all);
         // ADR-0007: the family emoji is 7 code points and 25 bytes; supplementary kanji take 4 bytes.
