@@ -38,6 +38,15 @@ final class Tally
 
     private int $unverified = 0;
 
+    /**
+     * @param int $recovered unfinished attempts of earlier runs this run printed (ADR-0004 item 8);
+     *     counted on the summary line so a reader of the summary alone sees them
+     */
+    public function __construct(
+        private readonly int $recovered = 0,
+    ) {
+    }
+
     public function discovered(DiscoveryResult $discovery): void
     {
         $this->discovered = count($discovery->targets);
@@ -107,6 +116,7 @@ final class Tally
         );
         $parts[] = self::plural($this->conflicts, 'reserved-name conflict');
         $parts[] = "{$this->unverified} unverified until Stage 3";
+        $parts[] = self::plural($this->recovered, 'crashed attempt') . ' of earlier runs';
 
         return 'Summary: ' . implode('; ', $parts);
     }

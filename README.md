@@ -19,7 +19,6 @@ Run `vendor/bin/pront`. Options:
 | --- | --- |
 | `--config <file>` | the configuration file (default: `pront.php` in the current directory) |
 | `--seed <int>` | the run seed; without it a random seed is used |
-| `--edge-ratio <r>` | the share of edge values, from 0 to 1 (default 0.1) |
 | `--strict` | unchecked return-type fragments, reserved-name conflicts and classes "unverified until Stage 3" fail the run |
 | `--replay <token>` | re-run one attempt from its replay token |
 
@@ -27,7 +26,8 @@ The first line of every run shows the run seed and the algorithm identifier, so 
 run can be reproduced with `--seed`. The report lists every pre-run error and unchecked item and ends
 with a summary line.
 
-Exit codes: 0 when everything was verified; 1 when a counterexample was found (also a flaky one, and
+Exit codes: 0 when no counterexample and no error was found (unchecked items are listed but do not
+change it without `--strict`); 1 when a counterexample was found (also a flaky one, and
 whatever else happened in the run); 2 for a usage, configuration or pre-run error, a run with nothing
 to verify, an unverifiable trial or too many discards, and, with `--strict`, for the listed items.
 CI should run `vendor/bin/pront --strict`.
@@ -41,8 +41,7 @@ STDERR and exits with 1. If the process is killed, the next run prints the unfin
 replay token once; nothing is re-run automatically.
 
 A replay reproduces Pront's inputs of one attempt, not static or global state that earlier trials
-left behind, so a replay that passes does not prove the bug is gone. A token from a run with
-`--edge-ratio` must be replayed with the same `--edge-ratio`.
+left behind, so a replay that passes does not prove the bug is gone.
 
 ### Limits
 

@@ -19,14 +19,12 @@ use Pront\Engine\ReplayToken;
 use Pront\Engine\TargetReport;
 use Pront\Engine\TargetStatus;
 use Pront\Generator\ConstructorGenerator;
-use Pront\Generator\GeneratorFactory;
 use Pront\Journal\Journal;
 use Pront\Journal\RecoveredAttempt;
 use Pront\Oracle\FailureKind;
 use Pront\Oracle\Oracle;
 use Pront\Shrinker\OutcomeKind;
 use Pront\Shrinker\StopReason;
-use Pront\Type\TypeResolver;
 use Pront\Version;
 
 /**
@@ -45,6 +43,11 @@ use Pront\Version;
  * many discards, and with `--strict` also for an unchecked fragment, a reserved-name conflict, a
  * skipped implementation or a class "unverified until Stage 3"; otherwise 0.
  *
+ * A replay prints the input it runs first. A recorded buffer that no longer replays as recorded
+ * (repaired, or with other draw kinds: the target's parameters changed) never reports "no longer
+ * reproduces": a pass is then a replay error (exit 2). Unfinished attempts of earlier runs are
+ * counted on the summary line, which is all that changes for them.
+ *
  * The report goes to `$out`; a usage error and an internal error go to `$err`. A fatal error
  * during an attempt is reported by the journal's shutdown function on STDERR (ADR-0004 item 6).
  */
@@ -60,6 +63,9 @@ final class Application
     private $err;
 
     private Arguments $arguments;
+
+    /** Unfinished attempts of earlier runs printed by this run (ADR-0004 item 8). */
+    private int $recovered = 0;
 
     /**
      * @param list<string> $argv the command line without the script name
@@ -88,13 +94,20 @@ final class Application
             return ExitCode::SUCCESS;
         }
 
-        return $this->arguments->replay === null ? $this->verify() : $this->replay($this->arguments->replay);
+        try {
+            return $this->arguments->replay === null ? $this->verify() : $this->replay($this->arguments->replay);
+        } catch (\Throwable $e) {
+            // A Pront bug outside any attempt (an attempt's own failures never reach here).
+            fwrite($err, sprintf("Pront: internal error: %s: %s\n%s\nThe run did not finish; its result is unknown.\n", $e::class, $e->getMessage(), $e->getTraceAsString()));
+
+            return ExitCode::ERROR;
+        }
     }
 
     private function verify(): int
     {
         $seed = $this->arguments->seed ?? self::randomSeed();
-        $this->line(sprintf('Pront %s (seed %d, algorithm %s%s)', Version::ID, $seed, Algorithm::ID, $this->ratioNote()));
+        $this->line(sprintf('Pront %s (seed %d, algorithm %s)', Version::ID, $seed, Algorithm::ID));
 
         $prepared = $this->prepare();
         if ($prepared === null) {
@@ -103,7 +116,7 @@ final class Application
         [$journal, $discovery] = $prepared;
         $oracle = new Oracle();
         $engine = new Engine($journal, $oracle);
-        $tally = new Tally();
+        $tally = new Tally($this->recovered);
         $this->preRun($discovery, $tally);
 
         if ($discovery->targets === [] && $discovery->errors === []) {
@@ -125,14 +138,16 @@ final class Application
 
     private function replay(string $text): int
     {
-        $this->line(sprintf('Pront %s (replay, algorithm %s%s)', Version::ID, Algorithm::ID, $this->ratioNote()));
         try {
             $token = ReplayToken::parse($text);
         } catch (InvalidReplayToken $e) {
+            $this->line(sprintf('Pront %s (replay, algorithm %s)', Version::ID, Algorithm::ID));
             $this->line("Error: {$e->getMessage()}; nothing was replayed.");
 
             return ExitCode::ERROR;
         }
+        // The token's target seed is the seed of everything this run draws (ADR-0004 item 3).
+        $this->line(sprintf('Pront %s (replay, seed %d, algorithm %s)', Version::ID, $token->seed, $token->algorithm));
 
         $prepared = $this->prepare();
         if ($prepared === null) {
@@ -141,7 +156,7 @@ final class Application
         [$journal, $discovery] = $prepared;
         $oracle = new Oracle();
         $engine = new Engine($journal, $oracle);
-        $tally = new Tally();
+        $tally = new Tally($this->recovered);
         $this->preRun($discovery, $tally);
 
         $this->line('');
@@ -173,6 +188,15 @@ final class Application
             : ChoiceBuffer::repairing($token->buffer);
         $this->line('  Input:');
         $this->input($target, $buffer, $token->buffer);
+        // A recorded buffer that was repaired, or not read draw for draw with the recorded kinds, no
+        // longer describes the recorded input (the target's parameters changed): a pass then proves
+        // nothing.
+        $kinds = static fn(array $draws): array => array_map(static fn(Draw $draw): string => $draw->kind->name, $draws);
+        $fits = $token->buffer === null
+            || (!$buffer->repaired() && $kinds($buffer->consumed()) === $kinds($token->buffer));
+        if (!$fits) {
+            $this->line("  The recorded buffer no longer fits {$token->target} (it was repaired, or its draws do not match the parameters): the input above is not the recorded one.");
+        }
 
         $result = $engine->replay($token, $discovery);
         $journal->finish();
@@ -182,7 +206,7 @@ final class Application
             $this->line(($unverifiable ? 'UNVERIFIABLE' : 'FAIL') . " {$token->target}: the replay failed");
             $this->line("  Failure: {$outcome->signature}");
             $tally->replayed($unverifiable ? 'unverifiable' : 'failed');
-        } elseif ($outcome->kind === OutcomeKind::Invalid) {
+        } elseif ($outcome->kind === OutcomeKind::Invalid || !$fits) {
             $this->line("ERROR {$token->target}: the recorded buffer no longer produces an input for it (did its parameter types change?)");
             $tally->replayError();
         } else {
@@ -220,6 +244,7 @@ final class Application
 
         try {
             $journal = Journal::start($base, function (RecoveredAttempt $attempt): void {
+                $this->recovered++;
                 $this->line($attempt->message());
             });
         } catch (\RuntimeException $e) {
@@ -235,7 +260,7 @@ final class Application
 
             return null;
         }
-        $discovery = (new Discovery(new TypeResolver(), new GeneratorFactory($this->arguments->edgeRatio)))->discover($config, $base);
+        $discovery = (new Discovery())->discover($config, $base);
 
         return [$journal, $discovery];
     }
@@ -310,7 +335,7 @@ final class Application
             '  Re-run %d times: reproduced %d times%s.',
             $counterexample->reruns,
             $counterexample->reproduced,
-            $flaky ? '; not reproducible (flaky), still counted as a counterexample' : '',
+            !$flaky ? '' : ($unverifiable ? '; not reproducible (flaky)' : '; not reproducible (flaky), still counted as a counterexample'),
         ));
         $this->line('  Replay: ' . $this->replayCommand($counterexample->token));
     }
@@ -377,21 +402,9 @@ final class Application
         if ($this->arguments->config !== null) {
             $parts[] = '--config ' . escapeshellarg($this->arguments->config);
         }
-        if ($this->arguments->edgeRatioGiven) {
-            $parts[] = '--edge-ratio ' . $this->arguments->edgeRatio;
-        }
         $parts[] = '--replay ' . $token->toString();
 
         return implode(' ', $parts);
-    }
-
-    /**
-     * A fresh trial regenerated from (seed, k) depends on the edge ratio, which a replay token does
-     * not carry: a non-default ratio is printed with the seed.
-     */
-    private function ratioNote(): string
-    {
-        return $this->arguments->edgeRatioGiven ? ", edge ratio {$this->arguments->edgeRatio}" : '';
     }
 
     /**

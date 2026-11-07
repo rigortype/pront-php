@@ -88,9 +88,9 @@ final class ValueRenderer
                     ?? ($byte < 0x20 || $byte >= 0x7F ? sprintf('\x%02X', $byte) : $unit);
                 continue;
             }
-            // Invisible, combining or format code points would hide in the terminal or merge with
-            // the quote; spell them out.
-            $out .= preg_match('/\A[\p{C}\p{Z}\p{M}]\z/u', $unit) === 1
+            // Invisible, combining or format code points (and the Hangul fillers, which are letters
+            // that render blank) would hide in the terminal or merge with the quote; spell them out.
+            $out .= preg_match('/\A[\p{C}\p{Z}\p{M}\x{115F}\x{1160}\x{3164}\x{FFA0}]\z/u', $unit) === 1
                 ? sprintf('\u{%X}', mb_ord($unit, 'UTF-8'))
                 : $unit;
         }

@@ -54,6 +54,7 @@ final class ValueRendererTest extends TestCase
         yield 'zero width joiner in an emoji' => ["👨\u{200D}👩", '"👨\u{200D}👩"'];
         yield 'no-break space' => ["\u{A0}", '"\u{A0}"'];
         yield 'next line control' => ["\u{85}", '"\u{85}"'];
+        yield 'Hangul filler' => ["\u{3164}", '"\u{3164}"'];
         yield 'flag' => ['🇯🇵', '"🇯🇵"'];
         yield 'empty array' => [[], '[]'];
         yield 'nested list' => [[1, [2, 'a']], '[1, [2, "a"]]'];

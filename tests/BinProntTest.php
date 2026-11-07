@@ -22,7 +22,7 @@ final class BinProntTest extends TestCase
     private const string CONFIG = "<?php\nreturn new \\Pront\\Config\\Config(['src']);\n";
 
     private const string ZERO_COUNTS = '0 skipped; 0 unchecked (0 return-type fragments, 0 targets with unchecked exceptions); '
-        . '0 reserved-name conflicts; 0 unverified until Stage 3';
+        . '0 reserved-name conflicts; 0 unverified until Stage 3; 0 crashed attempts of earlier runs';
 
     /**
      * @return iterable<string, array{string, list<string>, int, list<string>}> class body, extra
@@ -213,7 +213,7 @@ final class BinProntTest extends TestCase
         self::assertSame(1, $code, $replay);
         self::assertSame('', $stderr);
         self::assertContainsInOrder([
-            'Pront ' . Version::ID . " (replay, algorithm pront-1)\n",
+            'Pront ' . Version::ID . " (replay, seed 1, algorithm pront-1)\n",
             "Replaying A::m: fresh trial 1 of seed 1, recorded buffer of 2 draws\n  Input:\n    \$x = 100\n",
             "FAIL A::m: the replay failed\n  Failure: return type: A::m returned int, declared int<min, 99>\n",
             'Summary: 1 replayed attempt: 0 passed, 1 failed, 0 flaky, 0 unverifiable, 0 too many discards; 0 replay errors; 0 pre-run errors; ' . self::ZERO_COUNTS,
@@ -224,6 +224,94 @@ final class BinProntTest extends TestCase
         $fixed = $project->relative($fixed);
         self::assertSame(0, $code, $fixed);
         self::assertContainsInOrder(['    $x = 100', 'PASS A::m: no longer reproduces', '  ' . Engine::REPLAY_LIMITS, '1 replayed attempt: 1 passed, 0 failed'], $fixed);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, int, list<string>}> the failing body, the
+     *     edited body, exit code, fragments in order
+     */
+    public static function changedTargets(): iterable
+    {
+        $failing = 'public function __construct(int $base) {} #[Verify] public function m(int $x): void { throw new \Error(); }';
+        yield 'a parameter was added' => [
+            $failing,
+            str_replace('int $x)', 'int $x, int $y)', $failing),
+            1,
+            ["  Input:\n    \$self = new \\A(base: 0)\n    \$x = 0\n    \$y = 0\n", 'no longer fits A::m', 'FAIL A::m: the replay failed', '0 passed, 1 failed'],
+        ];
+        yield 'a parameter was added and the bug fixed' => [
+            $failing,
+            'public function __construct(int $base) {} #[Verify] public function m(int $x, int $y): void {}',
+            2,
+            ['no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '0 passed, 0 failed', '1 replay error'],
+        ];
+        yield 'a parameter changed its type' => [
+            $failing,
+            'public function __construct(int $base) {} #[Verify] public function m(bool $x): void {}',
+            2,
+            ['no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '1 replay error'],
+        ];
+        yield 'a narrowed range repairs the recorded value' => [
+            '/** @param int<0, 100> $x */ #[Verify(seed: 1)] public static function m(int $x): void { if ($x > 50) { throw new \Error(); } }',
+            '/** @param int<0, 10> $x */ #[Verify(seed: 1)] public static function m(int $x): void {}',
+            2,
+            ["    \$x = 10\n", 'no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '1 replay error'],
+        ];
+        yield 'the input is now discarded' => [
+            $failing,
+            str_replace('{}', '{ throw new \InvalidArgumentException("gone"); }', $failing),
+            0,
+            ['PASS A::m: no longer reproduces (the input was discarded: ', 'threw InvalidArgumentException: gone)', Engine::REPLAY_LIMITS, '1 passed'],
+        ];
+    }
+
+    /**
+     * @param list<string> $expected
+     */
+    #[DataProvider('changedTargets')]
+    public function testReplayAfterTheTargetChanged(string $failing, string $edited, int $exitCode, array $expected): void
+    {
+        $project = self::project($failing);
+        [$code, $stdout] = self::pront($project, []);
+        self::assertSame(1, $code, $stdout);
+        $token = self::token($stdout);
+
+        file_put_contents($project->directory . '/src/A.php', str_replace('{NS}', $project->namespace, self::php($edited)));
+        [$code, $replay] = self::pront($project, ['--replay', $token]);
+        $replay = $project->relative($replay);
+        self::assertContainsInOrder($expected, $replay);
+        self::assertStringNotContainsString('not drawn', $replay);
+        self::assertSame($exitCode, $code, $replay);
+    }
+
+    public function testTheReplayCommandQuotesTheConfigPath(): void
+    {
+        $project = new Project([
+            'with space/pront.php' => self::CONFIG,
+            'with space/src/A.php' => self::php('#[Verify] public static function m(): int { return 1 / 0; }'),
+        ]);
+        $config = $project->directory . '/with space/pront.php';
+
+        [$code, $stdout] = self::runBin([PHP_BINARY, self::BIN, '--config', $config], sys_get_temp_dir());
+        self::assertSame(1, $code, $stdout);
+        self::assertSame(1, preg_match('/^  Replay: vendor\/bin\/pront (.+)$/m', $stdout, $match), $stdout);
+        self::assertStringStartsWith('--config ' . escapeshellarg($config) . ' --replay pront:', $match[1]);
+
+        // The printed arguments survive a shell.
+        [$code, $replay] = self::runBin(['/bin/sh', '-c', escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(self::BIN) . ' ' . $match[1]], sys_get_temp_dir());
+        self::assertSame(1, $code, $replay);
+        self::assertStringContainsString(': the replay failed', $replay);
+    }
+
+    public function testARunEndsItsJournal(): void
+    {
+        $project = self::project('#[Verify(iterations: 1)] public static function m(): int { return 1; }');
+        self::pront($project, []);
+
+        $files = glob($project->directory . '/.pront/runs/*.jsonl') ?: [];
+        self::assertCount(1, $files);
+        $records = \Pront\Tests\Engine\Harness::records($files[0]);
+        self::assertSame(['type' => 'done'], end($records));
     }
 
     public function testReplayOfAnUnverifiableTokenExitsWithTwo(): void
@@ -257,20 +345,6 @@ final class BinProntTest extends TestCase
         [$code, $stdout] = self::pront($project, ['--replay', $token]);
         self::assertSame(2, $code, $stdout);
         self::assertStringContainsString($expected, $stdout);
-    }
-
-    public function testEdgeRatioReachesTheGenerators(): void
-    {
-        // Passes only when every int is drawn from the edge list of int<0, 1000000>.
-        $project = self::project('/** @param int<0, 1000000> $x */ #[Verify] public static function m(int $x): void { if (!in_array($x, [0, 1, 2, 1000000], true)) { throw new \Error(); } }');
-
-        [$code, $stdout] = self::pront($project, ['--seed', '3', '--edge-ratio', '1']);
-        self::assertSame(0, $code, $stdout);
-        self::assertStringStartsWith('Pront ' . Version::ID . " (seed 3, algorithm pront-1, edge ratio 1)\n", $stdout);
-
-        [$code, $stdout] = self::pront($project, ['--seed', '3', '--edge-ratio=0']);
-        self::assertSame(1, $code, $stdout);
-        self::assertStringContainsString('Replay: vendor/bin/pront --edge-ratio 0 --replay pront:', $stdout);
     }
 
     public function testAMemoryFatalPrintsTheReplayTokenAndExitsWithOne(): void
@@ -318,8 +392,11 @@ final class BinProntTest extends TestCase
         $token = ReplayToken::parse($match[1]);
         self::assertSame([1, null], [$token->k, $token->buffer]);
 
+        self::assertStringContainsString('; 1 crashed attempt of earlier runs', $stdout);
+
         [, $stdout] = self::pront($project, ['--seed', '9']);
         self::assertStringNotContainsString('Replay token', $stdout);
+        self::assertStringContainsString('; 0 crashed attempts of earlier runs', $stdout);
     }
 
     /**
@@ -336,9 +413,7 @@ final class BinProntTest extends TestCase
         yield 'seed not an int' => [['--seed', '1.5'], 'Pront: --seed must be an integer'];
         yield 'seed out of range' => [['--seed', '9223372036854775808'], 'Pront: --seed must be an integer'];
         yield 'seed with a plus sign' => [['--seed', '+1'], 'Pront: --seed must be an integer'];
-        yield 'edge ratio above 1' => [['--edge-ratio', '1.5'], 'Pront: --edge-ratio must be a number from 0 to 1'];
-        yield 'negative edge ratio' => [['--edge-ratio', '-0.1'], 'Pront: --edge-ratio must be a number from 0 to 1'];
-        yield 'edge ratio not a number' => [['--edge-ratio', 'nan'], 'Pront: --edge-ratio must be a number from 0 to 1'];
+        yield 'edge ratio is a #[Verify] matter, not an option' => [['--edge-ratio', '1'], 'Pront: Unknown option --edge-ratio'];
         yield 'repeated option' => [['--strict', '--strict'], 'Pront: --strict is given more than once'];
         yield 'flag with a value' => [['--strict=1'], 'Pront: --strict takes no value'];
         yield 'seed with replay' => [['--seed', '1', '--replay', 'pront:x'], 'Pront: --seed has no effect with --replay'];
