@@ -36,8 +36,8 @@ whitespace:
 verify-changed: whitespace docs-check docs-check-selftest
 	@if [ -x vendor/bin/phpunit ]; then \
 	  $(MAKE) --no-print-directory test; \
-	elif [ "$(REQUIRE_TESTS)" = 1 ]; then \
-	  echo "verify-changed: tests NOT run and REQUIRE_TESTS=1 (vendor/bin/phpunit missing; run make setup)" >&2; \
+	elif [ -n "$(REQUIRE_TESTS)" ]; then \
+	  echo "verify-changed: tests NOT run and REQUIRE_TESTS is set (vendor/bin/phpunit missing; run make setup)" >&2; \
 	  exit 1; \
 	else \
 	  echo "verify-changed: tests NOT run (vendor/bin/phpunit missing; run make setup)" >&2; \
