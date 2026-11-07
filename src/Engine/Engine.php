@@ -209,7 +209,6 @@ final class Engine
             : ChoiceBuffer::repairing($token->buffer);
         $outcome = $this->recorded(AttemptKind::Replay, $target, $token->seed, $token->k, $token->buffer, $buffer);
 
-
         return new ReplayResult($token, $outcome, $outcome->kind === OutcomeKind::Failed ? null : self::REPLAY_LIMITS);
     }
 
@@ -313,6 +312,7 @@ final class Engine
     {
         try {
             $trial->release();
+            self::collectCycles();
         } catch (\Throwable $failure) {
             return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
@@ -321,24 +321,56 @@ final class Engine
     }
 
     /**
+     * Frees values the release left in reference cycles now, inside the attempt, rather than at
+     * an arbitrary later point of the run (ADR-0004 item 5: `end` follows the release).
+     */
+    private static function collectCycles(): void
+    {
+        if (gc_status()['roots'] > 0) {
+            gc_collect_cycles();
+        }
+    }
+
+    /**
      * The receiver first (an instance method), then the parameters in declaration order. A
      * `Rejected` is returned as a discard with its message (the exception itself is dropped here:
      * its trace may hold generated values); a failure of user code reached while generating is
-     * returned as the failing `Outcome`.
+     * returned as the failing `Outcome`. What was generated before the stop is released here; a
+     * throwable from that release (a destructor) is returned as a failure.
      *
      * @throws InvalidChoice
      */
     private function generateInput(Target $target, ChoiceBuffer $buffer): Input|Outcome
     {
+        $receiver = null;
+        $invalid = null;
         try {
             $receiver = $target->receiver?->generate($buffer);
             $arguments = $target->arguments->generate($buffer);
-        } catch (InvalidChoice $invalid) {
-            throw $invalid;
+        } catch (InvalidChoice $caught) {
+            $invalid = $caught;
+            $outcome = Outcome::invalid();
         } catch (Rejected $rejected) {
-            return Outcome::discarded($rejected->getMessage());
+            $outcome = Outcome::discarded($rejected->getMessage());
         } catch (\Throwable $failure) {
-            return Outcome::fromThrowable($failure, self::outerFrames($failure));
+            $outcome = Outcome::fromThrowable($failure, self::outerFrames($failure));
+        }
+        if (isset($outcome)) {
+            unset($caught, $rejected, $failure);
+            // Release what was generated before the stop (the receiver) inside the attempt; a
+            // throwable from that release is a failure of the code under test, even on an invalid
+            // candidate, so it is never lost.
+            try {
+                $receiver = null;
+                self::collectCycles();
+            } catch (\Throwable $release) {
+                return Outcome::fromThrowable($release, self::outerFrames($release));
+            }
+            if ($invalid !== null) {
+                throw $invalid;
+            }
+
+            return $outcome;
         }
         if ($receiver !== null && !is_object($receiver)) {
             throw new \LogicException("The receiver generator of {$target->name()} made no object");

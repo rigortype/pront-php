@@ -7,6 +7,7 @@ namespace Pront\Tests\Engine;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Pront\ChoiceBuffer\ChoiceBuffer;
+use Pront\ChoiceBuffer\InvalidChoice;
 use Pront\ChoiceBuffer\Prng;
 use Pront\Discovery\DiscoveryResult;
 use Pront\Discovery\Target;
@@ -20,7 +21,9 @@ use Pront\Engine\TargetStatus;
 use Pront\Engine\Trial;
 use Pront\Engine\TrialsResult;
 use Pront\Engine\TrialsStatus;
+use Pront\Generator\ArgumentsGenerator;
 use Pront\Generator\Defaults;
+use Pront\Generator\Generator;
 use Pront\Generator\Rejected;
 use Pront\Journal\Journal;
 use Pront\Shrinker\Outcome;
@@ -386,26 +389,29 @@ final class EngineTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, int, ?callable(Target, Input): Outcome}> method body, attempts, property
+     * @return iterable<string, array{string, int, ?callable(Target, Input): Outcome, bool}> method body, attempts, property, cyclic input
      */
     public static function inputLifetimes(): iterable
     {
-        yield 'fresh trials' => ['', 3, null];
-        yield 'a fresh trial, then flaky re-runs' => ['throw new \\DomainException();', 6, null];
+        yield 'fresh trials' => ['', 3, null, false];
+        yield 'a fresh trial, then flaky re-runs' => ['throw new \\DomainException();', 6, null, false];
         // The Rejected's trace holds the input; it must not outlive the attempt.
-        yield 'discards' => ['', 31, static fn(Target $t, Input $in): Outcome => throw new Rejected('never')];
+        yield 'discards' => ['', 31, static fn(Target $t, Input $in): Outcome => throw new Rejected('never'), false];
+        // Only the cycle collector frees an input in a reference cycle.
+        yield 'an input in a reference cycle' => ['', 3, null, true];
     }
 
     /**
      * @param ?callable(Target, Input): Outcome $property
      */
     #[DataProvider('inputLifetimes')]
-    public function testEachInputIsBuiltAfterItsBeginAndDestroyedBeforeItsEnd(string $body, int $attempts, ?callable $property): void
+    public function testEachInputIsBuiltAfterItsBeginAndDestroyedBeforeItsEnd(string $body, int $attempts, ?callable $property, bool $cycle): void
     {
         [$project, $discovery] = Harness::discover(['src/A.php' => Harness::php(
             'final class A {
                 public static ?\Closure $probe = null;
-                public function __construct() { (self::$probe)?->__invoke("built"); }
+                public ?self $self = null;
+                public function __construct() { ' . ($cycle ? '$this->self = $this; ' : '') . '(self::$probe)?->__invoke("built"); }
                 public function __destruct() { (self::$probe)?->__invoke("destroyed"); }
                 #[Verify(iterations: 3)] public function m(): void { ' . $body . ' }
             }',
@@ -455,6 +461,69 @@ final class EngineTest extends TestCase
         self::assertStringStartsWith($exception . '@', (string) $report->counterexample?->failure->signature);
         self::assertSame(5, $report->counterexample->reproduced, 'the release fails the same way on every path');
         self::assertSame(['fresh' => 1, 'flaky' => 5], self::attemptCounts($journal));
+    }
+
+    /**
+     * `$target` with parameter `$x` drawn by `$generator`.
+     */
+    private static function withArgument(Target $target, Generator $generator): Target
+    {
+        return new Target($target->method, $target->verify, $target->signature, new ArgumentsGenerator(['x' => $generator]), $target->receiver, $target->conditions, $target->reservedNameConflicts);
+    }
+
+    /**
+     * @return iterable<string, array{\Throwable}>
+     */
+    public static function generationStops(): iterable
+    {
+        yield 'an invalid buffer' => [new InvalidChoice('stop')];
+        yield 'a rejection' => [new Rejected('stop')];
+        yield 'a failure' => [new \RangeException('stop')];
+    }
+
+    #[DataProvider('generationStops')]
+    public function testAThrowingDestructorOfAPartlyGeneratedInputFailsTheAttempt(\Throwable $stop): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
+            'final class A { public function __destruct() { throw new \\DomainException("dtor"); } #[Verify] public function m(int $x): void {} }',
+        )]);
+        $stopping = new class ($stop) implements Generator {
+            public function __construct(private \Throwable $stop) {}
+
+            public function generate(ChoiceBuffer $buffer): mixed
+            {
+                throw $this->stop;
+            }
+        };
+        $target = self::withArgument($discovery->targets[0], $stopping);
+
+        $result = $engine->replay(new ReplayToken($target->name(), 1, 1, []), new DiscoveryResult([$target], [], []));
+
+        self::assertSame(OutcomeKind::Failed, $result->outcome->kind);
+        self::assertStringStartsWith('DomainException@', (string) $result->outcome->signature);
+        self::assertSame('failed', Harness::records($journal->file)[1]['outcome']);
+    }
+
+    public function testAnInvalidChoiceOnAFreshBufferIsAProntBugButInvalidOnARecordedOne(): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php('final class A { #[Verify] public static function m(int $x): void {} }')]);
+        $invalid = new class implements Generator {
+            public function generate(ChoiceBuffer $buffer): mixed
+            {
+                throw new InvalidChoice('bug');
+            }
+        };
+        $target = self::withArgument($discovery->targets[0], $invalid);
+        $targets = new DiscoveryResult([$target], [], []);
+
+        self::assertSame(OutcomeKind::Invalid, $engine->replay(new ReplayToken($target->name(), 1, 1, []), $targets)->outcome->kind);
+        try {
+            $engine->replay(new ReplayToken($target->name(), 1, 1, null), $targets);
+            self::fail('expected the InvalidChoice to propagate');
+        } catch (InvalidChoice $e) {
+            self::assertSame('bug', $e->getMessage());
+        }
+        self::assertSame(['invalid', 'error'], array_column(array_filter(Harness::records($journal->file), static fn(array $r): bool => $r['type'] === 'end'), 'outcome'));
     }
 
     /**

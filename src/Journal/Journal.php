@@ -174,27 +174,30 @@ final class Journal
             ? "{$error['message']} in {$error['file']}:{$error['line']}"
             : 'the process ended without a fatal error (exit, die or a shutdown function in the code under test is undefined behaviour, ADR-0004 item 7)';
         $attempt = $this->inFlight;
-        try {
-            $this->write(['type' => 'fatal', 'n' => $attempt['n'], 'message' => $message]);
-        } finally {
-            // Whatever the journal could record, the token reaches STDERR and the status is 1.
-            $stderr = fopen('php://stderr', 'w');
-            if ($stderr !== false) {
-                fwrite($stderr, sprintf(
-                    "Pront: the run stopped during a %s attempt of %s: %s\nReplay token: %s\n",
-                    $attempt['kind'],
-                    $attempt['target'],
-                    $message,
-                    $attempt['token'],
-                ));
-                fflush($stderr);
-            }
+        // Whatever the journal could record, the token reaches STDERR and the status is 1.
+        $stderr = fopen('php://stderr', 'w') ?: null;
+        $record = function (array $record) use ($stderr): void {
             try {
-                $this->write(['type' => 'reported', 'by' => $this->runId]);
-            } finally {
-                exit(1);
+                $this->write($record);
+            } catch (\Throwable $failure) {
+                if ($stderr !== null) {
+                    fwrite($stderr, "Pront: could not write the {$record['type']} record to {$this->file}: {$failure->getMessage()}\n");
+                }
             }
+        };
+        $record(['type' => 'fatal', 'n' => $attempt['n'], 'message' => $message]);
+        if ($stderr !== null) {
+            fwrite($stderr, sprintf(
+                "Pront: the run stopped during a %s attempt of %s: %s\nReplay token: %s\n",
+                $attempt['kind'],
+                $attempt['target'],
+                $message,
+                $attempt['token'],
+            ));
+            fflush($stderr);
         }
+        $record(['type' => 'reported', 'by' => $this->runId]);
+        exit(1);
     }
 
     /**

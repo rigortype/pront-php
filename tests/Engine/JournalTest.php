@@ -32,11 +32,13 @@ final class JournalTest extends TestCase
      *
      * @return list<string>
      */
-    private static function recover(string $directory): array
+    private static function recover(string $directory, ?array &$attempts = null): array
     {
         $tokens = [];
-        Journal::start($directory, static function (RecoveredAttempt $attempt) use (&$tokens): void {
+        $attempts = [];
+        Journal::start($directory, static function (RecoveredAttempt $attempt) use (&$tokens, &$attempts): void {
             $tokens[] = $attempt->token;
+            $attempts[] = $attempt;
             self::assertStringEndsWith("Replay token: {$attempt->token}", $attempt->message());
         })->finish();
 
@@ -103,7 +105,7 @@ final class JournalTest extends TestCase
      * Earlier run files, the tokens a later run start reports, and whether it marks the file
      * `reported`.
      *
-     * @return iterable<string, array{list<string>, list<int>, bool}> lines, reported trial numbers k, marked
+     * @return iterable<string, array{0: list<string>, 1: list<int>, 2: bool, 3?: string}> lines, reported trial numbers k, marked, fatal message
      */
     public static function earlierRuns(): iterable
     {
@@ -113,7 +115,7 @@ final class JournalTest extends TestCase
         yield 'every attempt ended, no done' => [[self::begin(1, 1), '{"type":"end","n":1,"outcome":"passed"}'], [], false];
         yield 'done' => [[self::begin(1, 1), '{"type":"end","n":1,"outcome":"passed"}', '{"type":"done"}'], [], false];
         yield 'fatal, already reported by its own run' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"m"}', '{"type":"reported","by":"x"}'], [], false];
-        yield 'fatal whose own report did not finish' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"m"}'], [1], true];
+        yield 'fatal whose own report did not finish' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"out of memory"}'], [1], true, 'out of memory'];
         yield 'reported by an earlier recovery' => [[self::begin(1, 1), '{"type":"reported","by":"x"}'], [], false];
         yield 'no attempt' => [[], [], false];
     }
@@ -123,7 +125,7 @@ final class JournalTest extends TestCase
      * @param list<int> $ks
      */
     #[DataProvider('earlierRuns')]
-    public function testCrashRecoveryReportsAnUnfinishedAttemptOnce(array $lines, array $ks, bool $marked): void
+    public function testCrashRecoveryReportsAnUnfinishedAttemptOnce(array $lines, array $ks, bool $marked, ?string $fatal = null): void
     {
         $project = new Project([]);
         $file = self::runs($project->directory) . '/earlier.jsonl';
@@ -131,7 +133,11 @@ final class JournalTest extends TestCase
         $content = implode("\n", $lines) . ($lines === [] || json_decode((string) end($lines)) === null ? '' : "\n");
         file_put_contents($file, $content);
 
-        self::assertSame(array_map(self::token(...), $ks), self::recover($project->directory));
+        self::assertSame(array_map(self::token(...), $ks), self::recover($project->directory, $attempts));
+        self::assertSame(array_fill(0, count($ks), $fatal), array_map(static fn(RecoveredAttempt $a): ?string => $a->fatal, $attempts));
+        if ($fatal !== null) {
+            self::assertStringContainsString(": {$fatal}; nothing was re-run", $attempts[0]->message());
+        }
         self::assertSame([], self::recover($project->directory), 'reported once only');
 
         $after = (string) file_get_contents($file);
