@@ -39,6 +39,11 @@ use Pront\Generator\Rejected;
  * The budget is checked between evaluations: before each candidate, a spent evaluation budget
  * stops with `StopReason::Budget` and an elapsed wall time with `StopReason::Time`. A candidate
  * whose recording was already evaluated is not run again and costs nothing.
+ *
+ * `StopReason::Fixpoint` is a local minimum of these passes, not the global shortlex minimum. Known
+ * cases: a list or string at an edge length (the selector) never moves to a shorter uniform length,
+ * because that needs one more draw; a float `kind` 2 is tried only at its kind 0 neighbour, never
+ * at kind 1; the two kind 1 magnitude slots are lowered one at a time.
  */
 final class Shrinker
 {
