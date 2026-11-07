@@ -13,7 +13,10 @@ final readonly class ShrinkResult
 {
     /**
      * @param list<Draw> $buffer the best consumed buffer; the input buffer when nothing was accepted
-     * @param int $evaluations candidate evaluations run (each is one attempt, ADR-0004)
+     * @param Outcome $failure the failure every accepted candidate reproduced: the outcome of the
+     *                        first evaluation, the replay of the input buffer
+     * @param int $evaluations evaluations run, the replay of the input buffer included (each is one
+     *                         attempt, ADR-0004)
      * @param int $accepted candidates accepted as a new best
      */
     public function __construct(

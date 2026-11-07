@@ -160,7 +160,7 @@ final class ShrinkerTest extends TestCase
         };
         $start = [new Draw(DrawKind::Length, [9]), new Draw(DrawKind::Int, [9, 0])];
 
-        $result = (new Shrinker())->shrink($start, Outcome::failed('i >= 3'), $replay);
+        $result = (new Shrinker())->shrink($start, $replay);
 
         self::assertSame([[3], [3, 0]], $result->slots());
         self::assertSame(StopReason::Fixpoint, $result->stopReason);
@@ -234,7 +234,7 @@ final class ShrinkerTest extends TestCase
         };
         $start = [new Draw(DrawKind::Int, [5, 0]), new Draw(DrawKind::Int, [0, 0])];
 
-        $result = (new Shrinker())->shrink($start, Outcome::failed('five'), $replay);
+        $result = (new Shrinker())->shrink($start, $replay);
 
         self::assertSame(0, $result->accepted);
         self::assertSame(StopReason::Fixpoint, $result->stopReason);
@@ -251,11 +251,11 @@ final class ShrinkerTest extends TestCase
         $replay = static fn(ChoiceBuffer $b): Outcome => $b->drawInt(0, 1000) >= 50 ? Outcome::failed('big') : Outcome::passed();
 
         $result = (new Shrinker(observer: $observer))
-            ->shrink([new Draw(DrawKind::Int, [700, 0])], Outcome::failed('big'), $replay);
+            ->shrink([new Draw(DrawKind::Int, [700, 0])], $replay);
 
         $keys = array_map(static fn(array $buffer): string => serialize($buffer), $observer->begun);
         self::assertSame(array_unique($keys), $keys);
-        self::assertSame(15, $result->evaluations);
+        self::assertSame(16, $result->evaluations);
     }
 
     /**
@@ -273,7 +273,7 @@ final class ShrinkerTest extends TestCase
         };
         $start = [new Draw(DrawKind::Length, [10])];
 
-        $result = (new Shrinker())->shrink($start, Outcome::failed('always'), $replay);
+        $result = (new Shrinker())->shrink($start, $replay);
 
         self::assertSame([[10]], $result->slots());
         self::assertSame(0, $result->accepted);
@@ -308,7 +308,7 @@ final class ShrinkerTest extends TestCase
         };
         $start = [new Draw(DrawKind::Int, [700, 0])];
 
-        $result = (new Shrinker())->shrink($start, Outcome::failed('big'), $replay);
+        $result = (new Shrinker())->shrink($start, $replay);
 
         self::assertSame([[50, 0]], $result->slots());
     }
@@ -344,7 +344,7 @@ final class ShrinkerTest extends TestCase
         $start = [new Draw(DrawKind::Int, [700, 0])];
         $replay = static fn(ChoiceBuffer $b): Outcome => self::fail('no evaluation expected');
 
-        $result = (new Shrinker(maxEvaluations: 0))->shrink($start, Outcome::failed('f'), $replay);
+        $result = (new Shrinker(maxEvaluations: 0))->shrink($start, $replay);
 
         self::assertSame(StopReason::Budget, $result->stopReason);
         self::assertSame(0, $result->evaluations);
@@ -364,7 +364,7 @@ final class ShrinkerTest extends TestCase
         };
 
         $result = (new Shrinker(maxSeconds: 3.0, clock: $clock))
-            ->shrink([new Draw(DrawKind::Int, [700, 0])], Outcome::failed('big'), $replay);
+            ->shrink([new Draw(DrawKind::Int, [700, 0])], $replay);
 
         self::assertSame(StopReason::Time, $result->stopReason);
         self::assertSame(3, $result->evaluations);
@@ -376,7 +376,7 @@ final class ShrinkerTest extends TestCase
         $replay = static fn(ChoiceBuffer $b): Outcome => $b->drawInt(0, 1000) >= 50 ? Outcome::failed('big') : Outcome::passed();
 
         $result = (new Shrinker(observer: $observer))
-            ->shrink([new Draw(DrawKind::Int, [700, 0])], Outcome::failed('big'), $replay);
+            ->shrink([new Draw(DrawKind::Int, [700, 0])], $replay);
 
         self::assertCount($result->evaluations, $observer->begun);
         self::assertSame($observer->begun, array_column($observer->ended, 0));
@@ -393,7 +393,7 @@ final class ShrinkerTest extends TestCase
 
         try {
             (new Shrinker(observer: $observer))
-                ->shrink([new Draw(DrawKind::Int, [700, 0])], Outcome::failed('big'), $replay);
+                ->shrink([new Draw(DrawKind::Int, [700, 0])], $replay);
             self::fail('the exception must propagate');
         } catch (\LogicException $e) {
             self::assertSame('engine bug', $e->getMessage());
@@ -402,10 +402,49 @@ final class ShrinkerTest extends TestCase
         self::assertSame([[$observer->begun[0], null]], $observer->ended);
     }
 
-    public function testOnlyAFailureCanBeShrunk(): void
+    /**
+     * The input buffer is replayed first; when it does not fail, nothing is shrunk and the stop
+     * reason says so.
+     */
+    public function testAStartThatDoesNotFailIsReported(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        (new Shrinker())->shrink([], Outcome::passed(), static fn(ChoiceBuffer $b): Outcome => Outcome::passed());
+        $start = [new Draw(DrawKind::Int, [700, 0])];
+
+        $result = (new Shrinker())->shrink($start, static fn(ChoiceBuffer $b): Outcome => Outcome::passed());
+
+        self::assertSame(StopReason::NotReproduced, $result->stopReason);
+        self::assertSame(1, $result->evaluations);
+        self::assertSame(0, $result->accepted);
+        self::assertSame($start, $result->buffer);
+    }
+
+    /**
+     * The failure the trial loop saw ran under the trial loop's stack; the candidates run under the
+     * shrinker's passes, each with its own stack. The harness frames are not part of the signature,
+     * so the failure shrinks and has the signature the trial loop saw.
+     */
+    public function testTheTargetFailureComesFromTheShrinkersOwnReplay(): void
+    {
+        $runTrial = static function (ChoiceBuffer $buffer): Outcome {
+            try {
+                if ($buffer->drawInt(0, 1000) >= 50) {
+                    throw new \DomainException('too big');
+                }
+            } catch (\DomainException $e) {
+                return Outcome::fromThrowable($e);
+            }
+
+            return Outcome::passed();
+        };
+        $fresh = ChoiceBuffer::replay([[700, 0]]);
+        $seen = $runTrial($fresh);
+        self::assertSame(OutcomeKind::Failed, $seen->kind);
+
+        $result = (new Shrinker())->shrink($fresh->consumed(), $runTrial);
+
+        self::assertSame([[50, 0]], $result->slots());
+        self::assertSame(StopReason::Fixpoint, $result->stopReason);
+        self::assertTrue($result->failure->reproduces($seen));
     }
 
     public function testFailureSignatureIncludesTheCallStack(): void
@@ -466,7 +505,7 @@ final class ShrinkerTest extends TestCase
             ? Outcome::passed()
             : Outcome::failed('property');
 
-        return $shrinker->shrink($start, Outcome::failed('property'), $replay);
+        return $shrinker->shrink($start, $replay);
     }
 
     /**

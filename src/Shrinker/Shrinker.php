@@ -95,7 +95,13 @@ final class Shrinker
     }
 
     /**
-     * Shrinks `$failing`, the consumed buffer of a run that failed with `$failure`.
+     * Shrinks `$failing`, the consumed buffer of a failing run.
+     *
+     * The first evaluation replays `$failing` itself, and its outcome is the failure every candidate
+     * must reproduce: a failure signature can depend on the call path (`Outcome::fromThrowable()`
+     * includes the stack), so the original run's outcome, classified by another caller, is not
+     * compared. When that replay does not fail, nothing is shrunk and the stop reason is
+     * `StopReason::NotReproduced`.
      *
      * `$replay` regenerates the input from the buffer it is given, runs the property on it, and
      * returns the outcome; it must not keep the input once it returns (the attempt ends there,
@@ -106,20 +112,21 @@ final class Shrinker
      * @param list<Draw> $failing
      * @param callable(ChoiceBuffer): Outcome $replay
      */
-    public function shrink(array $failing, Outcome $failure, callable $replay): ShrinkResult
+    public function shrink(array $failing, callable $replay): ShrinkResult
     {
-        if ($failure->kind !== OutcomeKind::Failed) {
-            throw new \InvalidArgumentException('Only a failure can be shrunk');
-        }
         $this->replay = $replay(...);
         $this->best = $failing;
-        $this->failure = $failure;
+        $this->failure = Outcome::invalid();
         $this->seen = [self::key($failing) => true];
         $this->evaluations = 0;
         $this->accepted = 0;
         $this->deadline = ($this->clock)() + $this->maxSeconds;
 
         try {
+            [$this->failure] = $this->evaluate($failing);
+            if ($this->failure->kind !== OutcomeKind::Failed) {
+                return new ShrinkResult($this->best, $this->failure, $this->evaluations, 0, StopReason::NotReproduced);
+            }
             do {
                 $before = $this->accepted;
                 $this->blockDeletion();
@@ -351,13 +358,33 @@ final class Shrinker
         if (isset($this->seen[$key])) {
             return false;
         }
+        $this->seen[$key] = true;
+        [$outcome, $consumed] = $this->evaluate($candidate);
+        if (!$outcome->reproduces($this->failure) || Simplicity::compareBuffers($consumed, $this->best) >= 0) {
+            return false;
+        }
+        $this->best = $consumed;
+        $this->seen[self::key($consumed)] = true;
+        $this->accepted++;
+
+        return true;
+    }
+
+    /**
+     * Runs one attempt on `$candidate` once the budget allows it.
+     *
+     * @param list<Draw> $candidate
+     * @return array{Outcome, list<Draw>} the outcome and the consumed buffer
+     * @throws BudgetSpent
+     */
+    private function evaluate(array $candidate): array
+    {
         if ($this->evaluations >= $this->maxEvaluations) {
             throw new BudgetSpent(StopReason::Budget);
         }
         if (($this->clock)() >= $this->deadline) {
             throw new BudgetSpent(StopReason::Time);
         }
-        $this->seen[$key] = true;
         $this->evaluations++;
 
         $buffer = ChoiceBuffer::repairing($candidate, $this->floats);
@@ -373,15 +400,7 @@ final class Shrinker
             $this->observer?->end($candidate, $outcome);
         }
 
-        $consumed = $buffer->consumed();
-        if (!$outcome->reproduces($this->failure) || Simplicity::compareBuffers($consumed, $this->best) >= 0) {
-            return false;
-        }
-        $this->best = $consumed;
-        $this->seen[self::key($consumed)] = true;
-        $this->accepted++;
-
-        return true;
+        return [$outcome, $buffer->consumed()];
     }
 
     /**
