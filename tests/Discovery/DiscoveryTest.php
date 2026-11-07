@@ -631,9 +631,61 @@ final class DiscoveryTest extends TestCase
 
         self::assertSame(['Dup::m'], self::targetNames($project, $result));
         self::assertErrors([
-            'Dup: is declared in both src/a.php and src/b.php',
             'src/b.php: not loaded: redeclares Dup, already declared in src/a.php',
             'Other::m(): not read, because loading src/b.php failed',
+        ], self::errors($project, $result));
+    }
+
+    public function testAVerifiedRedeclarationIsReported(): void
+    {
+        [$project, $result] = self::discover([
+            'src/a.php' => self::php('final class Dup {}'),
+            'src/b.php' => self::php('final class Dup { #[Verify] public static function m(): void {} }'),
+        ]);
+
+        self::assertSame([], $result->targets);
+        self::assertErrors(['src/b.php: not loaded: redeclares Dup, already declared in src/a.php'], self::errors($project, $result));
+    }
+
+    public function testDuplicatesThatNeverTouchProntAreLeftAlone(): void
+    {
+        [$project, $result] = self::discover([
+            'src/A.php' => self::php('final class A { #[Verify] public static function m(): void {} }'),
+            'src/V1/Foo.php' => self::php('final class Foo {}'),
+            'src/V2/Foo.php' => self::php('final class Foo {}'),
+        ]);
+
+        self::assertSame([], self::errors($project, $result));
+        self::assertSame(['A::m'], self::targetNames($project, $result));
+    }
+
+    public function testUnrelatedClassesWithUnloadableParentsAreNotLoaded(): void
+    {
+        [$project, $result] = self::discover([
+            'src/A.php' => self::php('final class A { #[Verify] public static function m(): void {} }'),
+            'src/Ctl.php' => self::php('$GLOBALS["pront_ctl_ran"] = true; final class Ctl extends \\Framework\\Controller {}'),
+            'src/Iter.php' => self::php('final class Iter implements \\Framework\\Contract, \\Countable { public function count(): int { return 0; } }'),
+        ]);
+
+        self::assertSame([], self::errors($project, $result));
+        self::assertSame(['A::m'], self::targetNames($project, $result));
+        self::assertArrayNotHasKey('pront_ctl_ran', $GLOBALS);
+        self::assertFalse(class_exists($project->namespace . '\\Iter', false));
+    }
+
+    public function testAClassAlreadyDeclaredFromAnotherFileIsAPreRunError(): void
+    {
+        $project = new Project([
+            'lib/X.php' => self::php('final class X { #[Verify] public static function m(): void {} }'),
+            'src/X.php' => self::php('final class X { #[Verify] public static function m(): void {} }'),
+        ]);
+        require $project->directory . '/lib/X.php';
+        $result = (new Discovery())->discover(new Config(['src']), $project->directory);
+
+        self::assertSame([], $result->targets);
+        self::assertErrors([
+            'src/X.php: X is already declared in',
+            'X::m(): not read, because loading src/X.php failed',
         ], self::errors($project, $result));
     }
 

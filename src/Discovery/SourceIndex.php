@@ -36,6 +36,9 @@ final class SourceIndex
     /** @var list<array{string, string, int}> */
     private array $suspects = [];
 
+    /** @var array<string, string> files whose dropped redeclaration carries Pront Attributes */
+    private array $redeclaring = [];
+
     /** @var array<string, array{classes: list<string>, functions: list<string>}> by file */
     private array $declarations = [];
 
@@ -290,8 +293,13 @@ final class SourceIndex
                     $existing->prontMethods + $declaration->prontMethods,
                 );
             } else {
-                $errors->add($declaration->name, "is declared in both {$existing->file} and {$file}");
+                // Reported only when the file becomes a candidate (it is one when the dropped
+                // declaration carries Pront Attributes), so duplicates that never touch Pront,
+                // such as version-specific compat classes, are left alone.
                 $this->unloadable[$file] = "redeclares {$declaration->name}, already declared in {$existing->file}";
+                if ($declaration->prontMethods !== []) {
+                    $this->redeclaring[$file] = $file;
+                }
             }
         }
         array_push($this->placements, ...$collector->placements);
@@ -351,6 +359,14 @@ final class SourceIndex
         }
 
         return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function redeclaringFiles(): array
+    {
+        return array_values($this->redeclaring);
     }
 
     /**
@@ -427,21 +443,21 @@ final class SourceIndex
     }
 
     /**
-     * Whether a parent chain of `$name` reaches a class-like that is neither in the index nor
-     * already declared by PHP itself, so where it leads is known only after loading.
+     * The first ancestors of `$name` that are not in the index, reached through parents that
+     * are; where they lead is known only once they are loaded.
+     *
+     * @return list<string>
      */
-    public function leavesIndex(string $name): bool
+    public function openAncestors(string $name): array
     {
+        $open = [];
         $seen = [];
         $pending = [$name];
         while ($pending !== []) {
             $current = array_pop($pending);
             $declaration = $this->classLike($current);
             if ($declaration === null) {
-                $known = class_exists($current, false) || interface_exists($current, false) || trait_exists($current, false);
-                if (!$known || !(new \ReflectionClass($current))->isInternal()) {
-                    return true;
-                }
+                $open[strtolower($current)] = $current;
                 continue;
             }
             if (isset($seen[strtolower($declaration->name)])) {
@@ -451,7 +467,7 @@ final class SourceIndex
             array_push($pending, ...$declaration->parents);
         }
 
-        return false;
+        return array_values($open);
     }
 
     /**

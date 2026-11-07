@@ -85,20 +85,39 @@ final class Discovery
                     }
                 }
 
-                // A chain through a class outside `paths` can only be followed once loaded.
-                return $contracts !== [] && $index->leavesIndex($d->name);
+                return false;
             },
         ));
 
         $candidates = array_unique([
             ...array_map(static fn(Placement $p): string => $p->file, $index->placements()),
             ...array_map(static fn(array $suspect): string => $suspect[1], $index->suspects()),
+            ...$index->redeclaringFiles(),
             ...array_map(static fn(ClassLikeDeclaration $c): string => $c->file, [...$contracts, ...$related]),
         ]);
         sort($candidates, SORT_STRING);
         foreach ($candidates as $file) {
             $this->load($file, $index, $errors);
         }
+
+        // A chain through a class outside `paths` is followed without loading the in-scope file:
+        // only its first ancestors outside the index are autoloaded, and the file is loaded only
+        // when one of them descends from a contract. An ancestor that cannot be loaded means the
+        // class can never be declared, so nothing is reported for it.
+        $extra = [];
+        foreach ($index->classLikes() as $declaration) {
+            if ($contracts === [] || in_array($declaration, $related, true) || in_array($declaration, $contracts, true)) {
+                continue;
+            }
+            foreach ($index->openAncestors($declaration->name) as $ancestor) {
+                if (self::autoloads($ancestor) && self::extendsAny($ancestor, $contracts)) {
+                    $extra[] = $declaration;
+                    $this->load($declaration->file, $index, $errors);
+                    break;
+                }
+            }
+        }
+        $related = [...$related, ...$extra];
 
         foreach ($index->placements() as $placement) {
             $this->readPlacement($placement, $errors);
@@ -626,6 +645,29 @@ final class Discovery
     {
         foreach (array_keys($map) as $candidate) {
             if (strcasecmp($candidate, $key) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function autoloads(string $name): bool
+    {
+        try {
+            return class_exists($name) || interface_exists($name) || trait_exists($name);
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * @param list<ClassLikeDeclaration> $contracts
+     */
+    private static function extendsAny(string $class, array $contracts): bool
+    {
+        foreach ($contracts as $contract) {
+            if (self::declared($contract->name) && is_a($class, $contract->name, true)) {
                 return true;
             }
         }
