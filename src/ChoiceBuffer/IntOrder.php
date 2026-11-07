@@ -66,10 +66,12 @@ final class IntOrder
     }
 
     /**
-     * The valid position nearest to (`$magnitude`, `$side`), for a repairing replay: a side above 1
-     * becomes 1; a side that holds no value in the range moves to the other side at the same
-     * distance; a magnitude past its side's limit is lowered to the limit. A valid position is
-     * returned unchanged.
+     * A valid position for (`$magnitude`, `$side`), for a repairing replay. It stays on its side
+     * when it can, as the clamp of a slot to its new range: a side above 1 becomes 1; side 1, when
+     * the range holds no value below the origin, moves to side 0 at the same distance; then a
+     * magnitude past its side's limit is lowered to that limit (the farthest value on that side),
+     * even when the other side holds a value at a nearer distance. A valid position is returned
+     * unchanged.
      *
      * @param int<0, max> $magnitude
      * @return array{int<0, max>, 0|1} [magnitude, side]

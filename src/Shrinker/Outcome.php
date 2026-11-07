@@ -10,9 +10,11 @@ namespace Pront\Shrinker;
  *
  * Same failure (ADR-0002 section 4 accepts a candidate only if it "still fails"): two failures are
  * the same when their signatures are equal strings, nothing looser. `fromThrowable()` is the
- * conservative signature for a thrown failure: the exception class and the file and line that
- * threw it, never the message (a message usually embeds the input, so it would change with every
- * candidate). A caller that classifies failures otherwise (a return-type or `Ensures` violation)
+ * conservative signature for a thrown failure: the exception class, the file and line that threw
+ * it, and the file and line of every frame of its stack trace (so one assertion helper or callee
+ * reached from two call sites gives two signatures), never the message or the arguments (they
+ * usually embed the input, so they would change with every candidate). A failure whose stack
+ * depth depends on the input (recursion) therefore only shrinks among inputs of the same depth. A caller that classifies failures otherwise (a return-type or `Ensures` violation)
  * passes a signature naming the check that failed, again without the input.
  */
 final readonly class Outcome
@@ -51,11 +53,17 @@ final readonly class Outcome
     }
 
     /**
-     * A failure identified by the throwable's class and throw site.
+     * A failure identified by the throwable's class, throw site and call stack (file and line of
+     * each frame; a frame without a file, such as an internal call, contributes `-`).
      */
     public static function fromThrowable(\Throwable $failure): self
     {
-        return self::failed(sprintf('%s@%s:%d', $failure::class, $failure->getFile(), $failure->getLine()));
+        $sites = [sprintf('%s:%d', $failure->getFile(), $failure->getLine())];
+        foreach ($failure->getTrace() as $frame) {
+            $sites[] = isset($frame['file']) ? sprintf('%s:%d', $frame['file'], $frame['line'] ?? 0) : '-';
+        }
+
+        return self::failed($failure::class . '@' . implode(' < ', $sites));
     }
 
     /**

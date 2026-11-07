@@ -193,6 +193,72 @@ final class ShrinkerTest extends TestCase
     }
 
     /**
+     * Negative floats move to the positive value: kind 0 by the int side rule, kind 1 by its sign
+     * slot (1e300 has no kind 0 neighbour that fails).
+     *
+     * @return iterable<string, array{float, \Closure(float): bool, float}>
+     */
+    public static function negativeFloats(): iterable
+    {
+        yield 'kind 0' => [-5.0, static fn(float $f): bool => abs($f) < 1.5, 2.0];
+        yield 'kind 1' => [-1e300, static fn(float $f): bool => abs($f) < 1e20, 1e20];
+    }
+
+    /**
+     * @param \Closure(float): bool $property
+     */
+    #[DataProvider('negativeFloats')]
+    public function testNegativeFloatsBecomePositive(float $value, \Closure $property, float $atLeast): void
+    {
+        $generator = (new GeneratorFactory())->forType(new FloatType());
+        $start = self::consume($generator, [(new FloatCodec())->encode($value)]);
+
+        $result = self::shrink($generator, $property, $start);
+
+        $shrunk = $generator->generate(ChoiceBuffer::replay($result->slots()));
+        self::assertGreaterThanOrEqual($atLeast, $shrunk);
+        self::assertLessThan(2 * $atLeast, $shrunk);
+    }
+
+    /**
+     * A candidate whose consumed buffer equals the best (deleting a trailing all-zero draw reads it
+     * back as zeros) is not strictly smaller and is not accepted.
+     */
+    public function testAnEqualBufferIsNotAccepted(): void
+    {
+        $replay = static function (ChoiceBuffer $buffer): Outcome {
+            $first = $buffer->drawInt(0, 10);
+            $buffer->drawInt(0, 10);
+
+            return $first === 5 ? Outcome::failed('five') : Outcome::passed();
+        };
+        $start = [new Draw(DrawKind::Int, [5, 0]), new Draw(DrawKind::Int, [0, 0])];
+
+        $result = (new Shrinker())->shrink($start, Outcome::failed('five'), $replay);
+
+        self::assertSame(0, $result->accepted);
+        self::assertSame(StopReason::Fixpoint, $result->stopReason);
+        self::assertSame([[5, 0], [0, 0]], $result->slots());
+    }
+
+    /**
+     * A recording evaluated in an earlier round is not run again. Pinned on a small fixture: the
+     * second round repeats the first round's deletion and lowering to 0, which cost nothing.
+     */
+    public function testARecordingIsEvaluatedOnce(): void
+    {
+        $observer = new RecordingObserver();
+        $replay = static fn(ChoiceBuffer $b): Outcome => $b->drawInt(0, 1000) >= 50 ? Outcome::failed('big') : Outcome::passed();
+
+        $result = (new Shrinker(observer: $observer))
+            ->shrink([new Draw(DrawKind::Int, [700, 0])], Outcome::failed('big'), $replay);
+
+        $keys = array_map(static fn(array $buffer): string => serialize($buffer), $observer->begun);
+        self::assertSame(array_unique($keys), $keys);
+        self::assertSame(15, $result->evaluations);
+    }
+
+    /**
      * A candidate that still fails but whose consumed buffer is longer is never accepted.
      */
     public function testNeverAcceptsABufferThatIsNotShortlexSmaller(): void
@@ -342,11 +408,25 @@ final class ShrinkerTest extends TestCase
         (new Shrinker())->shrink([], Outcome::passed(), static fn(ChoiceBuffer $b): Outcome => Outcome::passed());
     }
 
+    public function testFailureSignatureIncludesTheCallStack(): void
+    {
+        $check = static fn(bool $ok): \Throwable => new \LogicException('failed');
+        $viaA = static fn(): \Throwable => $check(false);
+        $viaB = static fn(): \Throwable => $check(false);
+
+        self::assertFalse(Outcome::fromThrowable($viaA())->reproduces(Outcome::fromThrowable($viaB())));
+        $first = null;
+        foreach ([1, 2] as $i) {
+            $outcome = Outcome::fromThrowable($viaA());
+            $first ??= $outcome;
+            self::assertTrue($outcome->reproduces($first));
+        }
+    }
+
     public function testFailureSignatureIsTheThrowSite(): void
     {
         $throw = static fn(string $message): \Throwable => new \DomainException($message);
-        $a = Outcome::fromThrowable($throw('input 1'));
-        $b = Outcome::fromThrowable($throw('input 2'));
+        [$a, $b] = array_map(static fn(string $m): Outcome => Outcome::fromThrowable($throw($m)), ['input 1', 'input 2']);
         $other = Outcome::fromThrowable(new \DomainException('input 1'));
         $otherClass = Outcome::fromThrowable(new \RangeException('input 1'));
 

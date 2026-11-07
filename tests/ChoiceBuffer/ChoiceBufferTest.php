@@ -231,10 +231,25 @@ final class ChoiceBufferTest extends TestCase
         }
     }
 
-    public function testRepairingCannotFixAKindOnePatternWithoutEncoding(): void
+    /**
+     * @return iterable<string, array{list<int>}>
+     */
+    public static function unrepairableKindOne(): iterable
+    {
+        yield 'zero pattern' => [[1, 0, 0, 0]];
+        // Every pattern whose high slot is at its limit is non-finite.
+        yield 'high past its range' => [[1, 0x80000000, 0, 0]];
+        yield 'high at its limit' => [[1, 0x7FFFFFFF, 5, 0]];
+    }
+
+    /**
+     * @param list<int> $slots
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('unrepairableKindOne')]
+    public function testRepairingCannotFixAKindOnePatternWithoutEncoding(array $slots): void
     {
         $this->expectException(InvalidChoice::class);
-        ChoiceBuffer::repairing([new Draw(DrawKind::Float, [1, 0, 0, 0])])->drawFloat();
+        ChoiceBuffer::repairing([new Draw(DrawKind::Float, $slots)])->drawFloat();
     }
 
     public function testRepairingAValidRecordingIsAReplay(): void

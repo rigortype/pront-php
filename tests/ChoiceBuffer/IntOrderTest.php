@@ -134,6 +134,9 @@ final class IntOrderTest extends TestCase
         yield 'empty side at int max' => [PHP_INT_MAX, 1, 0, PHP_INT_MAX, [PHP_INT_MAX, 0]];
         yield 'negative range' => [50, 1, -20, -10, [9, 1]];
         yield 'full width' => [PHP_INT_MAX, 1, PHP_INT_MIN, PHP_INT_MAX, [PHP_INT_MAX, 1]];
+        // A side keeps its side: lowered to its limit, not moved to a nearer value on the other side.
+        yield 'side 0 of a negative range stays at the origin' => [5, 0, -20, -10, [0, 0]];
+        yield 'side 0 past max stays on side 0' => [50, 0, -100, 5, [5, 0]];
     }
 
     /**

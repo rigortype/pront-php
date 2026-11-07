@@ -268,7 +268,9 @@ final class ChoiceBuffer
     private function kindOne(): float
     {
         $zeroFilledBefore = $this->zeroFilled;
-        $high = $this->clampSlot(1, $this->slot(), 0x7FFFFFFF, 'float kind 1 high', DrawKind::Float);
+        // A high slot past 0x7FFFFFFF is never clamped: every pattern with the high slot at its
+        // limit is non-finite, so no clamp could repair it; `kindOne()` rejects it.
+        $high = $this->slot();
         $low = $this->clampSlot(2, $this->slot(), 0xFFFFFFFF, 'float kind 1 low', DrawKind::Float);
         $sign = $this->clampSlot(3, $this->slot(), 1, 'float kind 1 sign', DrawKind::Float);
         if ($this->zeroFilled > $zeroFilledBefore
