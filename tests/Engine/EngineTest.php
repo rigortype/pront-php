@@ -598,6 +598,134 @@ final class EngineTest extends TestCase
         self::assertSame('failed', Harness::records($journal->file)[1]['outcome']);
     }
 
+    /**
+     * @return iterable<string, array{string, string, string}> extra classes, method body, signature prefix
+     */
+    public static function throwingReleases(): iterable
+    {
+        // Releasing the input throws a throwable that owns another throwing destructor.
+        yield 'nested release of the input' => [
+            'final class Holder { public function __destruct() { throw new E(new Res()); } }',
+            '',
+            '{NS}\\E@',
+        ];
+    }
+
+    #[DataProvider('throwingReleases')]
+    public function testThrowingReleasesFailTheAttemptWithoutLeavingTheEngine(string $classes, string $method, string $signature): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
+            'final class Res { public function __destruct() { throw new \\DomainException("res"); } }
+             final class E extends \\Exception { public function __construct(public object $owned) { parent::__construct("e"); } }
+             ' . $classes . '
+             final class A {
+                public ?object $holder = null;
+                public function __construct() { if (class_exists(Holder::class, false)) { $this->holder = new Holder(); } }
+                #[Verify] public function m(): void { ' . $method . ' }
+            }',
+        )]);
+        $target = $discovery->targets[0];
+
+        $report = $engine->verify($target, self::RUN_SEED);
+
+        self::assertSame(TargetStatus::Failed, $report->status);
+        self::assertSame(5, $report->counterexample?->reproduced);
+        self::assertStringStartsWith(str_replace('{NS}', $target->method->getDeclaringClass()->getNamespaceName(), $signature), (string) $report->counterexample->failure->signature);
+        self::assertNotContains('error', array_column(array_filter(Harness::records($journal->file), static fn(array $r): bool => $r['type'] === 'end'), 'outcome'));
+    }
+
+    /**
+     * Each throwable owns an object whose destructor throws another one, so freeing never ends.
+     * The engine stops after `DROP_LIMIT` frees and reports the attempt as failed. The throwable it
+     * keeps alive is freed by PHP's own shutdown, where the chain never ends either (code that never
+     * terminates, ADR-0004), so this runs in a subprocess that is killed once it has reported.
+     */
+    public function testFreeingThatNeverEndsIsCappedAndReportedAsAFailure(): void
+    {
+        $project = new Project(['src/A.php' => Harness::php(
+            'final class E extends \\Exception { public function __construct(public object $owned) { parent::__construct("e"); } }
+             final class R { public function __destruct() { throw new E(new R()); } }
+             final class A { #[Verify] public function m(): void { new R(); } }',
+        )]);
+        $script = Harness::script($project->directory, <<<'PHP'
+            $report = $engine->verify($discovery->targets[0], 1);
+            $journal->finish();
+            echo $report->status->name, "\n", $report->counterexample?->reproduced, "\n", $report->counterexample?->failure->signature, "\n";
+            echo json_encode(array_values(array_filter(array_map(static fn(string $l): ?string => json_decode($l, true)['outcome'] ?? null, file($journal->file, FILE_IGNORE_NEW_LINES))))), "\nreported\n";
+            PHP);
+
+        $stderr = $project->directory . '/stderr';
+        $process = proc_open([PHP_BINARY, $script], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $stderr, 'w']], $pipes);
+        self::assertIsResource($process);
+        stream_set_timeout($pipes[1], 60);
+        $stdout = '';
+        while (!str_contains($stdout, "reported\n") && ($line = fgets($pipes[1])) !== false) {
+            $stdout .= $line;
+        }
+        proc_terminate($process, 9);
+        proc_close($process);
+
+        $lines = explode("\n", $stdout);
+        self::assertSame(['Failed', '5', 'reported'], [$lines[0] ?? null, $lines[1] ?? null, $lines[4] ?? null], $stdout . file_get_contents($stderr));
+        self::assertStringStartsWith('Freeing the input threw ' . Engine::DROP_LIMIT . ' times in a row', $lines[2]);
+        self::assertNotContains('error', json_decode($lines[3], true));
+    }
+
+    public function testAnInvalidChoiceHiddenByAThrowingDestructorOnAFreshBufferIsRethrownAfterTheAttempt(): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
+            'final class A { public function __destruct() { throw new \\DomainException("dtor"); } #[Verify] public function m(int $x): void {} }',
+        )]);
+        $invalid = new class implements Generator {
+            public function generate(ChoiceBuffer $buffer): mixed
+            {
+                throw new InvalidChoice('bug');
+            }
+        };
+        $target = self::withArgument($discovery->targets[0], $invalid);
+        $targets = new DiscoveryResult([$target], [], []);
+
+        self::assertSame(OutcomeKind::Failed, $engine->replay(new ReplayToken($target->name(), 1, 1, []), $targets)->outcome->kind, 'a recorded buffer: the failure');
+        foreach ([
+            'fresh replay' => static fn() => $engine->replay(new ReplayToken($target->name(), 1, 1, null), $targets),
+            'trial iterator' => static fn() => $engine->verify($target, self::RUN_SEED),
+        ] as $path => $run) {
+            try {
+                $run();
+                self::fail("{$path}: expected the InvalidChoice");
+            } catch (InvalidChoice $e) {
+                self::assertSame('bug', $e->getMessage(), $path);
+            }
+        }
+        self::assertSame(['failed', 'failed', 'failed'], array_column(array_filter(Harness::records($journal->file), static fn(array $r): bool => $r['type'] === 'end'), 'outcome'), 'each attempt ended before the rethrow');
+    }
+
+    public function testAnAbandonedTrialIteratorReleasesTheInputBeforeTheEndRecord(): void
+    {
+        [$project, $discovery] = Harness::discover(['src/A.php' => Harness::php(
+            'final class A {
+                public static ?\Closure $probe = null;
+                public function __destruct() { (self::$probe)?->__invoke(); }
+                #[Verify] public function m(): void {}
+            }',
+        )]);
+        $journal = $this->journal($project);
+        $class = $discovery->targets[0]->method->getDeclaringClass()->getName();
+        $ends = [];
+        $class::$probe = static function () use ($journal, &$ends): void {
+            $ends[] = count(array_filter(Harness::records($journal->file), static fn(array $r): bool => $r['type'] === 'end'));
+        };
+
+        $trials = (new Engine($journal, Harness::call(...)))->trials($discovery->targets[0], 1);
+        $trials->current();
+        $trials = null;
+        $class::$probe = null;
+
+        self::assertSame([0], $ends, 'the input was released before the end record');
+        self::assertSame(['begin', 'end'], array_column(Harness::records($journal->file), 'type'));
+        self::assertSame('error', Harness::records($journal->file)[1]['outcome']);
+    }
+
     public function testAnInvalidChoiceOnAFreshBufferIsAProntBugButInvalidOnARecordedOne(): void
     {
         [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php('final class A { #[Verify] public static function m(int $x): void {} }')]);

@@ -41,8 +41,24 @@ final class Engine
         . 'static or global state that earlier trials of the original run left behind is not reproduced, '
         . 'so a failure that depends on such state may not reproduce.';
 
+    /**
+     * How many throwables `drop()` frees in a row before it gives up: a destructor that throws a
+     * throwable owning another such object (`throw new E(new self())`) never stops.
+     */
+    public const int DROP_LIMIT = 100;
+
+    /** @var list<\Throwable> throwables `drop()` gave up on; kept alive so freeing them throws nothing */
+    private static array $unfreeable = [];
+
     /** @var \Closure(Target, Input): Outcome */
     private readonly \Closure $property;
+
+    /**
+     * An `InvalidChoice` that a failure of the code under test (a throwing destructor while
+     * freeing a partly generated input) turned into a failing outcome; on a fresh buffer it is a
+     * Pront bug, rethrown once the attempt has ended.
+     */
+    private ?InvalidChoice $invalidBehindFailure = null;
 
     /**
      * @param callable(Target, Input): Outcome $property
@@ -166,8 +182,15 @@ final class Engine
                     $outcome = $released;
                 }
             } finally {
+                if (isset($trial)) {
+                    // The iterator was abandoned (or failed) while the trial was out: release its
+                    // input inside the attempt, before `end`.
+                    $this->releaseInput($trial, Outcome::passed());
+                    unset($trial);
+                }
                 $this->journal->end($n, $outcome);
             }
+            $this->rethrowInvalidBehindFailure();
 
             if ($outcome->kind === OutcomeKind::Passed) {
                 $passed++;
@@ -284,8 +307,27 @@ final class Engine
         } finally {
             $this->journal->end($n, $outcome);
         }
+        if ($recording === null) {
+            $this->rethrowInvalidBehindFailure();
+        }
 
         return $outcome;
+    }
+
+    /**
+     * Rethrows an `InvalidChoice` of a fresh buffer that a failure of the code under test hid
+     * (see `$invalidBehindFailure`), so the Pront bug is not lost; the attempt has ended with the
+     * failure in the journal.
+     *
+     * @throws InvalidChoice
+     */
+    private function rethrowInvalidBehindFailure(): void
+    {
+        $invalid = $this->invalidBehindFailure;
+        $this->invalidBehindFailure = null;
+        if ($invalid !== null) {
+            throw $invalid;
+        }
     }
 
     /**
@@ -327,11 +369,13 @@ final class Engine
      * collects cycles. Freeing can run user destructors, which can throw a throwable that owns
      * further user objects, and so on: each such throwable is caught and freed in turn, until a
      * free completes, so no throwable ever leaves the engine or outlives the attempt. The first one
-     * fails the attempt, unless it already failed with its own signature.
+     * fails the attempt, unless it already failed with its own signature. After `DROP_LIMIT` frees
+     * in a row it gives up: the last throwable is kept alive and the attempt fails with a signature
+     * naming the limit.
      */
     private static function drop(mixed &$value, Outcome $outcome): Outcome
     {
-        while (true) {
+        for ($freed = 0; $freed < self::DROP_LIMIT; $freed++) {
             try {
                 $value = null;
                 self::collectCycles();
@@ -343,6 +387,20 @@ final class Engine
                 unset($next);
             }
         }
+        // Freeing kept throwing: keep the last throwable alive for the rest of the process rather
+        // than free it outside the attempt, and fail the attempt with a signature that says so.
+        // Such destructors never terminate: PHP's own shutdown frees what is kept here and runs
+        // the chain again (code that never terminates stops the run, ADR-0004 Consequences); the
+        // failure is reported and the journal is done before that.
+        self::$unfreeable[] = $value;
+        $last = Outcome::fromThrowable($value, self::outerFrames($value));
+        $value = null;
+
+        return Outcome::failed(sprintf(
+            'Freeing the input threw %d times in a row (destructors that keep throwing; the last throwable is never freed): %s',
+            self::DROP_LIMIT,
+            $last->signature,
+        ));
     }
 
     /**
@@ -378,6 +436,7 @@ final class Engine
      */
     private function generateInput(Target $target, ChoiceBuffer $buffer): Input|Outcome
     {
+        $this->invalidBehindFailure = null;
         $receiver = null;
         $invalid = null;
         $caught = null;
@@ -399,8 +458,11 @@ final class Engine
             unset($stop);
             $outcome = self::drop($caught, $outcome);
             $outcome = self::drop($receiver, $outcome);
-            if ($invalid !== null && $outcome->kind === OutcomeKind::Invalid) {
-                throw $invalid;
+            if ($invalid !== null) {
+                if ($outcome->kind === OutcomeKind::Invalid) {
+                    throw $invalid;
+                }
+                $this->invalidBehindFailure = $invalid;
             }
 
             return $outcome;
