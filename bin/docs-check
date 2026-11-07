@@ -1,0 +1,119 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Mechanical gates for the document roles of ADR-0001. Exit 0 when clean, 1 otherwise.
+// Paths are checked as git sees them (case-sensitive), not as the local filesystem does.
+
+$root = getenv('DOCS_CHECK_ROOT') ?: dirname(__DIR__); // the override lets bin/docs-check-selftest run fixtures
+if (getenv('DOCS_CHECK_ROOT')) {
+    fwrite(STDERR, "docs-check: root overridden to $root\n");
+}
+if (!is_dir($root) || !chdir($root)) {
+    fwrite(STDERR, "docs-check: cannot enter root $root\n");
+    exit(2);
+}
+$errors = [];
+
+$tracked = array_values(array_filter(
+    explode("\0", (string) shell_exec('git ls-files -co --exclude-standard -z')),
+    static fn (string $f): bool => $f !== '' && is_file($f), // drop files deleted in the worktree
+));
+$trackedSet = array_fill_keys($tracked, true);
+$dirSet = ['' => true, '.' => true];
+foreach ($tracked as $f) {
+    for ($d = dirname($f); $d !== '.' && $d !== '/'; $d = dirname($d)) {
+        $dirSet[$d] = true;
+    }
+}
+
+// CRLF is normalized so a fence or Status line cannot hide behind a carriage return.
+$read = static fn (string $path): string => str_replace("\r\n", "\n", (string) file_get_contents($path));
+$lines = static fn (string $path): int => substr_count($read($path), "\n");
+// Fenced blocks (up to three leading spaces, any fence length, an unterminated fence runs to the end
+// of the file) and inline code are ignored. Indented code is deliberately NOT stripped: it cannot be
+// told from list continuation, and a false failure is louder than a false pass.
+// A backtick fence's info string cannot contain a backtick, so a line like "```code``` text" is
+// inline code, not a fence. If PCRE gives up, fail loudly instead of falling back to unstripped text.
+$stripCode = static function (string $text): string {
+    $fail = static fn (): never => throw new RuntimeException('docs-check: regex failure: ' . preg_last_error_msg());
+    $text = preg_replace('/^ {0,3}(`{3,}(?![^\n]*`)|~{3,})[^\n]*\n.*?(?:^ {0,3}\1[`~]*[ \t]*$|\z)/ms', '', $text) ?? $fail();
+    return preg_replace('/`[^`\n]*`/', '', $text) ?? $fail();
+};
+
+foreach ($tracked as $f) {
+    if (strcasecmp(basename($f), 'ROADMAP.md') === 0) {
+        $errors[] = "$f must not exist (ADR-0001: backlog lives in GitHub Issues).";
+    }
+}
+if (!isset($trackedSet['docs/CURRENT_WORK.md'])) {
+    $errors[] = 'docs/CURRENT_WORK.md is missing (or has the wrong case).';
+} elseif ($lines('docs/CURRENT_WORK.md') > 120) {
+    $errors[] = 'docs/CURRENT_WORK.md exceeds 120 lines (' . $lines('docs/CURRENT_WORK.md') . ').';
+}
+if (isset($trackedSet['AGENTS.md']) && $lines('AGENTS.md') > 200) {
+    $errors[] = 'AGENTS.md exceeds 200 lines (' . $lines('AGENTS.md') . ').';
+}
+
+// Every ADR carries a Status line (outside code fences); every ADR is a row in the index table.
+$records = array_filter($tracked, static fn (string $f): bool => (bool) preg_match('#^docs/adr/[0-9][^/]*\.md$#', $f));
+foreach ($records as $file) {
+    if (!preg_match('/^- Status: \S/m', $stripCode($read($file)))) {
+        $errors[] = "$file has no '- Status:' line.";
+    }
+}
+$index = isset($trackedSet['docs/adr/README.md']) ? $read('docs/adr/README.md') : '';
+foreach ($records as $file) {
+    if (str_starts_with($file, 'docs/adr/')
+        && !preg_match('/^\|[^\n]*\]\(' . preg_quote(basename($file), '/') . '\)/m', $index)) {
+        $errors[] = "$file has no row in the docs/adr/README.md table.";
+    }
+}
+
+// Relative Markdown links must resolve: inline links (with optional title or <angle brackets>)
+// and reference definitions.
+foreach ($tracked as $file) {
+    if (!str_ends_with($file, '.md') || str_starts_with($file, 'vendor/')) {
+        continue;
+    }
+    $text = $stripCode($read($file));
+    $targets = [];
+    if (preg_match_all('/\]\(\s*(?:<([^>]*)>|([^)\s]+))(?:\s+(?:"[^"]*"|\'[^\']*\'))?\s*\)/', $text, $m, PREG_SET_ORDER)) {
+        foreach ($m as $hit) {
+            $targets[] = $hit[1] !== '' ? $hit[1] : ($hit[2] ?? '');
+        }
+    }
+    if (preg_match_all('/^\s{0,3}\[(?!\^)[^\]]+\]:\s*(?:<([^>]*)>|(\S+))/m', $text, $m, PREG_SET_ORDER)) {
+        foreach ($m as $hit) {
+            $targets[] = $hit[1] !== '' ? $hit[1] : ($hit[2] ?? '');
+        }
+    }
+    foreach ($targets as $target) {
+        if ($target === '' || preg_match('#^([a-z][a-z0-9+.-]*:|\#|/)#i', $target)) {
+            continue; // URL, anchor, absolute
+        }
+        $path = rawurldecode(explode('#', explode('?', $target)[0])[0]);
+        if ($path === '') {
+            continue;
+        }
+        $parts = [];
+        foreach (explode('/', dirname($file) . '/' . $path) as $seg) {
+            if ($seg === '..') {
+                array_pop($parts);
+            } elseif ($seg !== '' && $seg !== '.') {
+                $parts[] = $seg;
+            }
+        }
+        $resolved = implode('/', $parts);
+        if (!isset($trackedSet[$resolved]) && !isset($dirSet[$resolved])) {
+            $errors[] = "$file: broken link to $target";
+        }
+    }
+}
+
+if ($errors !== []) {
+    fwrite(STDERR, implode("\n", $errors) . "\n");
+    exit(1);
+}
+echo "docs-check: ok\n";

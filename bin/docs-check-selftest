@@ -1,0 +1,69 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Negative and positive fixtures for bin/docs-check. Each case builds a tiny git repo in a temp
+// directory, runs the gate with DOCS_CHECK_ROOT pointing at it, and compares the exit code.
+
+$gate = __DIR__ . '/docs-check';
+$base = [
+    'docs/CURRENT_WORK.md' => "# Handoff\n",
+    'AGENTS.md' => "# Agents\n",
+    'docs/adr/README.md' => "| ADR | S | T |\n|---|---|---|\n| [ADR-0001](0001-x.md) | Proposed | X |\n",
+    'docs/adr/0001-x.md' => "# ADR-0001\n\n- Status: Proposed\n",
+    'GLOSSARY.md' => "# Glossary\n",
+];
+$cases = [
+    ['clean tree passes', [], 0],
+    ['broken inline link', ['GLOSSARY.md' => "[a](nope.md)\n"], 1],
+    ['broken titled link', ['GLOSSARY.md' => "[a](nope.md \"t\")\n"], 1],
+    ['broken reference link', ['GLOSSARY.md' => "[a]: nope.md\n"], 1],
+    ['wrong-case link', ['GLOSSARY.md' => "[a](glossary.md)\n"], 1],
+    ['broken link in nested list', ['GLOSSARY.md' => "- a\n    - [x](nope.md)\n"], 1],
+    ['link inside fence ignored', ['GLOSSARY.md' => "```\n[a](nope.md)\n```\n"], 0],
+    ['link inside indented fence ignored', ['GLOSSARY.md' => "   ```\n[a](nope.md)\n   ```\n"], 0],
+    ['nested long fence ignored', ['GLOSSARY.md' => "````\n```\n[a](nope.md)\n```\n````\n"], 0],
+    ['CRLF fence closes', ['GLOSSARY.md' => "```\r\n[a](nope.md)\r\n```\r\nReal [y](nope2.md)\r\n"], 1],
+    ['unterminated fence hides the rest', ['GLOSSARY.md' => "```\n[a](nope.md)\n"], 0],
+    ['footnote is not a link', ['GLOSSARY.md' => "[^1]: Some text.\n"], 0],
+    ['inline triple-backtick is not a fence', ['GLOSSARY.md' => "```code``` and [x](nope.md) here\nmore [y](nope2.md)\n"], 1],
+    ['ROADMAP.md forbidden', ['ROADMAP.md' => "x\n"], 1],
+    ['handoff over 120 lines', ['docs/CURRENT_WORK.md' => str_repeat("x\n", 121)], 1],
+    ['ADR without Status', ['docs/adr/0001-x.md' => "# ADR-0001\n"], 1],
+    ['Status only inside a fence', ['docs/adr/0001-x.md' => "# A\n\n```\n- Status: Proposed\n```\n"], 1],
+    ['ADR missing from index table', ['docs/adr/0002-y.md' => "# A\n\n- Status: Proposed\n"], 1],
+    ['ADR only mentioned in prose', ['docs/adr/README.md' => "see (0001-x.md)\n", 'docs/adr/0001-x.md' => "# A\n\n- Status: Proposed\n"], 1],
+    ['handoff deleted', ['docs/CURRENT_WORK.md' => null], 1],
+];
+
+$sh = static fn (string $cmd, string $cwd): int => (function () use ($cmd, $cwd): int {
+    exec('cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' >/dev/null 2>&1', $o, $rc);
+    return $rc;
+})();
+
+$failed = 0;
+foreach ($cases as [$name, $changes, $expected]) {
+    $dir = sys_get_temp_dir() . '/docs-check-' . bin2hex(random_bytes(4));
+    mkdir($dir);
+    $sh('git init -q', $dir);
+    foreach ($base as $path => $text) {
+        @mkdir(dirname("$dir/$path"), 0777, true);
+        file_put_contents("$dir/$path", $text);
+    }
+    $sh('git add -A', $dir);
+    foreach ($changes as $path => $text) {
+        if ($text === null) {
+            unlink("$dir/$path");
+            continue;
+        }
+        @mkdir(dirname("$dir/$path"), 0777, true);
+        file_put_contents("$dir/$path", $text);
+    }
+    $rc = $sh('DOCS_CHECK_ROOT=' . escapeshellarg($dir) . ' php ' . escapeshellarg($gate), $dir) === 0 ? 0 : 1;
+    $sh('rm -rf ' . escapeshellarg($dir), sys_get_temp_dir());
+    $ok = $rc === $expected;
+    echo ($ok ? 'ok   ' : 'FAIL ') . $name . "\n";
+    $failed += $ok ? 0 : 1;
+}
+exit($failed === 0 ? 0 : 1);
