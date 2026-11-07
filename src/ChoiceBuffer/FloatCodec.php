@@ -15,7 +15,8 @@ namespace Pront\ChoiceBuffer;
  *
  * Kind 1 rejects every pattern that has another encoding or none: non-finite values, `-0.0`,
  * integer values inside the kind 0 range, and the bit pattern of any edge-table entry. So no value
- * has two encodings. Fresh kinds are 0, 1 and 2 with weights 20, 70 and 10.
+ * has two encodings. Fresh, kind 2 is chosen with the edge ratio (10% by default, ADR-0002 section 3
+ * calls the kind 2 weight "the edge ratio"); kinds 0 and 1 share the rest 20:70.
  */
 final class FloatCodec
 {
@@ -28,8 +29,11 @@ final class FloatCodec
     /** Fresh kind 0 values lie in [-FRESH_KIND0_LIMIT, FRESH_KIND0_LIMIT]. */
     public const int FRESH_KIND0_LIMIT = 16;
 
-    /** Fresh kind weights in percent. */
-    public const array KIND_WEIGHTS = [20, 70, 10];
+    /** Fresh weights of kinds 0 and 1 (ADR-0002 section 3: 20% and 70% at the default edge ratio). */
+    public const array KIND_WEIGHTS = [20, 70];
+
+    /** The default edge ratio, the fresh probability of kind 2 (ADR-0007 section 2). */
+    public const float DEFAULT_EDGE_RATIO = 0.1;
 
     /** @var list<float> */
     public readonly array $edges;
@@ -60,18 +64,19 @@ final class FloatCodec
     }
 
     /**
-     * The fresh slots of one float draw.
+     * The fresh slots of one float draw; kind 2 with probability `$edgeRatio` (never with an empty
+     * edge table).
      *
      * @return list<int>
      */
-    public function freshSlots(Prng $prng): array
+    public function freshSlots(Prng $prng, float $edgeRatio = self::DEFAULT_EDGE_RATIO): array
     {
-        $weights = self::KIND_WEIGHTS;
-        if ($this->edges === []) {
-            $weights[2] = 0;
+        if (!($edgeRatio >= 0.0 && $edgeRatio <= 1.0)) {
+            throw new \InvalidArgumentException('The edge ratio must be within [0, 1]');
         }
+        $kind = $this->edges !== [] && $prng->chance($edgeRatio) ? 2 : $prng->weighted(self::KIND_WEIGHTS);
 
-        return match ($prng->weighted($weights)) {
+        return match ($kind) {
             0 => [0, ...IntOrder::encode(
                 $prng->intInRange(-self::FRESH_KIND0_LIMIT, self::FRESH_KIND0_LIMIT),
                 -self::KIND0_LIMIT,

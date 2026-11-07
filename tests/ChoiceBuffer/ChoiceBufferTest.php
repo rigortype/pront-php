@@ -213,13 +213,73 @@ final class ChoiceBufferTest extends TestCase
     }
 
     /**
-     * ADR-0002 section 3: with no stated maximum the maximum is 16, so a larger minimum is an error for
-     * the generator layer to report, never a silent default.
+     * With no stated maximum the maximum is 16, or the minimum when that is larger, so a type with a
+     * larger minimum length stays generatable.
      */
-    public function testLengthMinimumAboveTheDefaultMaximumIsRejected(): void
+    public function testDefaultMaximumIsRaisedToTheMinimum(): void
     {
+        self::assertSame(17, ChoiceBuffer::replay([])->drawLength(17));
+        self::assertSame(16, ChoiceBuffer::replay([[16]])->drawLength(0));
+        $this->expectException(InvalidChoice::class);
+        ChoiceBuffer::replay([[1]])->drawLength(17);
+    }
+
+    /**
+     * A kind 1 payload that is invalid only because slots were read past the end decodes as the
+     * all-zero draw (ADR-0002 section 4: reading past the end is not a failure of the candidate).
+     *
+     * @return iterable<string, array{list<list<int>>}>
+     */
+    public static function zeroFilledKindOne(): iterable
+    {
+        yield 'whole payload missing' => [[[1]]];
+        yield 'low and sign missing, 1.0' => [[[1, 0x3FF00000]]];
+        yield 'sign missing, -0.0 is not it but 0.0' => [[[1, 0, 0]]];
+    }
+
+    /**
+     * @param list<list<int>> $draws
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('zeroFilledKindOne')]
+    public function testZeroFilledInvalidKindOneIsTheAllZeroDraw(array $draws): void
+    {
+        $buffer = ChoiceBuffer::replay($draws);
+        self::assertSame('0.0', var_export($buffer->drawFloat(), true));
+        self::assertSame([[0, 0, 0]], $buffer->consumedSlots());
+        self::assertSame('0.0', var_export(ChoiceBuffer::replay($buffer->consumedSlots())->drawFloat(), true));
+    }
+
+    public function testZeroFilledValidKindOneKeepsItsPattern(): void
+    {
+        $buffer = ChoiceBuffer::replay([[1, 0x3FF00001]]);
+        self::assertSame(FloatCodec::fromBits(0x3FF0000100000000), $buffer->drawFloat());
+        self::assertSame([[1, 0x3FF00001, 0, 0]], $buffer->consumedSlots());
+    }
+
+    public function testZeroFilledOutOfRangeKindOneStillThrows(): void
+    {
+        $this->expectException(InvalidChoice::class);
+        ChoiceBuffer::replay([[1, 0x80000000]])->drawFloat();
+    }
+
+    public function testFloatKindTwoFollowsTheEdgeRatio(): void
+    {
+        $kindTwo = static function (float $ratio): int {
+            $buffer = ChoiceBuffer::fresh(Prng::forTrial(40, 0));
+            $count = 0;
+            for ($i = 0; $i < 4000; $i++) {
+                $buffer->drawFloat($ratio);
+                $count += $buffer->consumed()[$i]->slots[0] === 2 ? 1 : 0;
+            }
+
+            return $count;
+        };
+        self::assertSame(0, $kindTwo(0.0));
+        self::assertSame(4000, $kindTwo(1.0));
+        self::assertGreaterThan(300, $kindTwo(0.1));
+        self::assertLessThan(500, $kindTwo(0.1));
         $this->expectException(\InvalidArgumentException::class);
-        ChoiceBuffer::replay([])->drawLength(17);
+        ChoiceBuffer::fresh(Prng::forTrial(40, 1))->drawFloat(-0.1);
     }
 
     public function testBoolAndNullableAreEvenFresh(): void
