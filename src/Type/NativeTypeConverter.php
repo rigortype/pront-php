@@ -66,6 +66,8 @@ final class NativeTypeConverter
         $name = $type->getName();
         if (!$type->isBuiltin()) {
             $keyword = strtolower($name);
+            // PHP 8.5 reflection already reports native `self` and `parent` as class names; only
+            // `static` reaches this branch in practice.
             if (in_array($keyword, ['self', 'static', 'parent'], true)) {
                 $parent = $class === null ? false : get_parent_class($class);
 

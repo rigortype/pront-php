@@ -25,12 +25,18 @@ final class TargetFactory
      * @param string $method the method declaration, docblock included, for example
      *     "/** @param int<0, 5> \$x *\/ public function m(int \$x): void {}"
      * @param string $classDoc the docblock of the declaring class
+     * @param string $declaration the declaration header, for example "enum Target" or
+     *     "class Target extends \\Exception"
+     * @param string $after code after the declaration
      */
-    public static function method(string $method, string $classDoc = '', string $extends = ''): \ReflectionMethod
-    {
+    public static function method(
+        string $method,
+        string $classDoc = '',
+        string $declaration = 'class Target',
+        string $after = '',
+    ): \ReflectionMethod {
         $namespace = 'Pront\\Tests\\Type\\Generated\\N' . ++self::$counter;
         $prelude = self::PRELUDE;
-        $extendsClause = $extends === '' ? '' : " extends {$extends}";
         $code = <<<PHP
             <?php
 
@@ -39,10 +45,12 @@ final class TargetFactory
             {$prelude}
 
             {$classDoc}
-            class Target{$extendsClause}
+            {$declaration}
             {
                 {$method}
             }
+
+            {$after}
             PHP;
 
         $dir = sys_get_temp_dir() . '/pront-type-tests-' . getmypid();

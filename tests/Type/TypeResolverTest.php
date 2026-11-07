@@ -24,11 +24,24 @@ final class TypeResolverTest extends TestCase
     /**
      * @param list<string> $tags PHPDoc tag lines of the method
      */
-    private static function resolve(array $tags, string $signature, string $classDoc = ''): ResolvedSignature
-    {
-        $doc = $tags === [] ? '' : "/**\n" . implode('', array_map(static fn(string $t): string => " * {$t}\n", $tags)) . " */\n";
+    private static function resolve(
+        array $tags,
+        string $signature,
+        string $classDoc = '',
+        string $declaration = 'class Target',
+        string $after = '',
+    ): ResolvedSignature {
+        return (new TypeResolver())->resolve(
+            TargetFactory::method(self::doc($tags) . $signature, $classDoc, $declaration, $after),
+        );
+    }
 
-        return (new TypeResolver())->resolve(TargetFactory::method($doc . $signature, $classDoc));
+    /**
+     * @param list<string> $tags
+     */
+    private static function doc(array $tags): string
+    {
+        return $tags === [] ? '' : "/**\n" . implode('', array_map(static fn(string $t): string => " * {$t}\n", $tags)) . " */\n";
     }
 
     /**
@@ -61,7 +74,7 @@ final class TypeResolverTest extends TestCase
             'int range min' => ['int<min, 0>', 'int', 'int<min, 0>'],
             'int range max' => ['int<0, max>', 'int', 'int<0, max>'],
             'int range full' => ['int<min, max>', 'int', 'int'],
-            'int range hex and binary' => ['int<0x10, 0b11111>', 'int', 'int<16, 31>'],
+            'int range plus sign' => ['int<+1, 9>', 'int', 'int<1, 9>'],
             'int range single' => ['int<3, 3>', 'int', 'int<3, 3>'],
             'positive-int' => ['positive-int', 'int', 'int<1, max>'],
             'negative-int' => ['negative-int', 'int', 'int<min, -1>'],
@@ -94,6 +107,11 @@ final class TypeResolverTest extends TestCase
             'array int keys' => ['array<int, string>', 'array', 'array<int, string>'],
             'array string keys' => ['array<string, int>', 'array', 'array<string, int>'],
             'array int|string keys' => ['array<int|string, bool>', 'array', 'array<int|string, bool>'],
+            'array-key keys' => ['array<array-key, bool>', 'array', 'array<int|string, bool>'],
+            'array of one argument' => ['array<bool>', 'array', 'array<int|string, bool>'],
+            'T[]' => ['bool[]', 'array', 'array<int|string, bool>'],
+            'nested T[]' => ['list<int>[]', 'array', 'array<int|string, list<int>>'],
+            'array-key' => ['array-key', 'int|string', 'int|string'],
             'unit enum' => ['Suit', '\\' . self::FX . 'Suit', self::FX . 'Suit'],
             'backed enum' => ['BackedSuit', '\\' . self::FX . 'BackedSuit', self::FX . 'BackedSuit'],
             'nullable enum' => ['?Suit', '?\\' . self::FX . 'Suit', self::FX . 'Suit|null'],
@@ -161,7 +179,8 @@ final class TypeResolverTest extends TestCase
         return [
             'void' => ['void', 'void', 'void'],
             'never' => ['never', 'never', 'never'],
-            'null' => ['null', '?int', 'null'],
+            'null' => ['null', 'null', 'null'],
+            'null over nullable keeps the native member' => ['null', '?int', 'null|int'],
             'mixed' => ['mixed', 'mixed', 'mixed'],
             'self' => ['self', 'self', 'self(%s)'],
             'static' => ['static', 'static', 'static(%s)'],
@@ -206,15 +225,16 @@ final class TypeResolverTest extends TestCase
         return [
             'callable' => ['callable(int): string', 'callable(int): string'],
             'generic class' => ['\ArrayIterator<int, int>', '\ArrayIterator<int, int>'],
-            'T[]' => ['int[]', 'int[]'],
-            'array-key' => ['array-key', 'array-key'],
+            'T[] of unsupported' => ['callable[]', 'callable'],
+            'decimal-int-string' => ['decimal-int-string', 'decimal-int-string'],
+            'static-closure' => ['static-closure', 'static-closure'],
             'non-falsy-string' => ['non-falsy-string', 'non-falsy-string'],
             'non-positive-int' => ['non-positive-int', 'non-positive-int'],
             'iterable' => ['iterable<int>', 'iterable<int>'],
             'object' => ['object', 'object'],
             'this' => ['$this', '$this'],
             'intersection' => ['Figure&\Countable', 'Figure & \Countable'],
-            'array without key' => ['array<int>', 'array<int>'],
+            'array with literal key' => ["array<'a', int>", "array<'a', int>"],
             'array with other key' => ['array<positive-int, int>', 'array<positive-int, int>'],
             'non-empty-array' => ['non-empty-array<int, int>', 'non-empty-array<int, int>'],
             'class-string' => ['class-string', 'class-string'],
@@ -301,6 +321,12 @@ final class TypeResolverTest extends TestCase
             'unknown generic class' => ['Nope<int>', 'unknown class', ''],
             'trait' => ['Fx\Helper', 'is a trait, not a type', ''],
             'list arity' => ['list<int, string>', 'takes exactly one type argument', ''],
+            'array arity' => ['array<int, int, int>', 'takes one or two type arguments', ''],
+            'hex bound' => ['int<0, 0xFF>', 'PHP reads it as 255, PHPStan 2.x as 0; write it in decimal', ''],
+            'binary literal' => ['0b11', 'PHP reads it as 3, PHPStan 2.x as 0', ''],
+            'octal literal' => ['010', 'PHP reads it as 8, PHPStan 2.x as 10', ''],
+            'invalid octal literal' => ['08', 'not a valid PHP integer literal, PHPStan 2.x as 8', ''],
+            'octal shape key' => ['array{010: int}', 'key 010: PHP reads it as 8', ''],
         ];
     }
 
@@ -524,13 +550,89 @@ final class TypeResolverTest extends TestCase
 
     public function testUndecidableNarrowingIsAnInputErrorAndAnUncheckedReturn(): void
     {
-        $input = self::resolve(['@param list<int> $x'], 'public function m(iterable $x): void {}');
+        $input = self::resolve(["@param 'strlen' \$x"], 'public function m(callable $x): void {}');
         self::assertNull($input->parameters['x']);
-        self::assertOneErrorContaining('cannot check that PHPDoc type list<int> narrows native type unchecked(iterable)', $input);
+        self::assertOneErrorContaining("cannot check that PHPDoc type 'strlen' narrows native type unchecked(callable)", $input);
 
-        $return = self::resolve(['@return list<int>'], 'public function m(): iterable {}');
+        $return = self::resolve(["@return 'strlen'"], 'public function m(): callable {}');
         self::assertSame([], self::messages($return));
-        self::assertSame('unchecked(list<int>)', $return->return?->describe());
+        self::assertSame("unchecked('strlen')", $return->return?->describe());
+    }
+
+    /**
+     * `iterable` and `object` are outside the Stage 1 list, but narrowing them is decidable.
+     *
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function iterableAndObject(): array
+    {
+        return [
+            'list in iterable' => ['list<int>', 'iterable', 'list<int>'],
+            'shape in nullable iterable' => ['array{a: int}', '?iterable', 'array{a: int}|null'],
+            'enum in object' => ['Suit', 'object', self::FX . 'Suit'],
+            'int in iterable' => ['int', 'iterable', null],
+            'string in object' => ['string', 'object', null],
+        ];
+    }
+
+    #[DataProvider('iterableAndObject')]
+    public function testNarrowingOfIterableAndObject(string $phpDoc, string $native, ?string $expected): void
+    {
+        $signature = self::resolve(["@param {$phpDoc} \$x"], "public function m({$native} \$x): void {}");
+
+        self::assertSame($expected, $signature->parameters['x']?->describe());
+        if ($expected === null) {
+            self::assertOneErrorContaining('is not a subtype of native type', $signature);
+        } else {
+            self::assertSame([], self::messages($signature));
+        }
+    }
+
+    /**
+     * PHPStan keeps the native union members a PHPDoc type does not overlap
+     * (`TypehintHelper::decideType`) and adds null for a null default.
+     *
+     * @return array<string, array{string, string, string}>
+     */
+    public static function nativeMembersKept(): array
+    {
+        return [
+            'nullable' => ['positive-int', '?int $x', 'int<1, max>|null'],
+            'nullable with null default' => ['positive-int', '?int $x = null', 'int<1, max>|null'],
+            'other scalar' => ['positive-int', 'int|string $x', 'int<1, max>|string'],
+            'both overlapped' => ["positive-int|'a'", 'int|string $x', "int<1, max>|'a'"],
+            'null and int kept' => ["'a'", 'int|string|null $x', "'a'|int|null"],
+            'false kept' => ['positive-int', 'int|false $x', 'int<1, max>|false'],
+            'explicit null not doubled' => ['?positive-int', '?int $x', 'int<1, max>|null'],
+            'untyped null default' => ['positive-int', '$x = null', 'int<1, max>|null'],
+            'non-null default' => ['positive-int', 'int $x = 5', 'int<1, max>'],
+            'string null default' => ['non-empty-string', "string \$x = 'null'", 'non-empty-string'],
+        ];
+    }
+
+    #[DataProvider('nativeMembersKept')]
+    public function testNativeUnionMembersAreKept(string $phpDoc, string $parameter, string $expected): void
+    {
+        $signature = self::resolve(["@param {$phpDoc} \$x"], "public function m({$parameter}): void {}");
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame($expected, $signature->parameters['x']?->describe());
+    }
+
+    public function testNativeUnionMembersAreKeptInReturn(): void
+    {
+        $signature = self::resolve(['@return list<int>'], 'public function m(): ?array {}');
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('list<int>|null', $signature->return?->describe());
+    }
+
+    public function testKeptNativeMemberOutsideTheListIsAnInputError(): void
+    {
+        $signature = self::resolve(['@param positive-int $x'], 'public function m(int|object $x): void {}');
+
+        self::assertNull($signature->parameters['x']);
+        self::assertOneErrorContaining('object: not in the Stage 1 list (in int<1, max>|unchecked(object))', $signature);
     }
 
     /**
@@ -560,7 +662,7 @@ final class TypeResolverTest extends TestCase
     public function testNameResolution(string $phpDoc, string $expected): void
     {
         $doc = "/**\n * @return {$phpDoc}\n */\n";
-        $method = TargetFactory::method($doc . 'public function m() {}', '', '\Exception');
+        $method = TargetFactory::method($doc . 'public function m() {}', '', 'class Target extends \Exception');
         $signature = (new TypeResolver())->resolve($method);
 
         self::assertSame([], self::messages($signature));
@@ -681,6 +783,24 @@ final class TypeResolverTest extends TestCase
         );
     }
 
+    public function testPhpstanThrowsWinsOverThrows(): void
+    {
+        $only = self::resolve(['@phpstan-throws Overflow'], 'public function m(): void {}');
+        self::assertSame([self::FX . 'Overflow'], $only->throws?->classes);
+
+        $both = self::resolve(['@throws \LogicException', '@phpstan-throws void'], 'public function m(): void {}');
+        self::assertSame([], self::messages($both));
+        self::assertSame([], $both->throws?->classes);
+    }
+
+    public function testThrowsSelfResolvesAgainstTheDeclaringClass(): void
+    {
+        $signature = self::resolve(['@throws self'], 'public function m(): void {}', '', 'class Target extends \Exception');
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame([substr($signature->subject, 0, -strlen('::m()'))], $signature->throws?->classes);
+    }
+
     public function testThrowsVoidDeclaresNothing(): void
     {
         $signature = self::resolve(['@throws void'], 'public function m(): void {}');
@@ -714,5 +834,120 @@ final class TypeResolverTest extends TestCase
 
         self::assertNull($signature->throws);
         self::assertOneErrorContaining($message, $signature);
+    }
+
+    public function testEnumWithoutCasesIsAnInputError(): void
+    {
+        $signature = self::resolve(['@param Fx\NoCases $x'], 'public function m($x): void {}');
+
+        self::assertOneErrorContaining('has no cases', $signature);
+        self::assertSame(self::FX . 'NoCases', self::resolve(['@return Fx\NoCases'], 'public function m() {}')->return?->describe());
+    }
+
+    /**
+     * PHPStan inherits PHPDoc for slots a method does not declare; Stage 1 reports it instead.
+     *
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function inheritance(): array
+    {
+        $class = 'class Target extends \Pront\Tests\Type\Fixtures\Documented';
+        $interface = 'class Target implements \Pront\Tests\Type\Fixtures\DocumentedContract';
+        $doc = static fn(string ...$tags): string => self::doc(array_values($tags));
+
+        return [
+            'nothing declared' => [$class, 'public function m(int $n, string $s): string {}',
+                'Documented::m() for parameter #0, parameter #1, return type, @throws would be inherited'],
+            'parameters declared' => [$class, $doc('@param int<0, 5> $n', '@param string $s') . 'public function m(int $n, string $s): string {}',
+                'Documented::m() for return type, @throws would be inherited'],
+            'renamed parameter declared by position' => [$class,
+                $doc('@param int $count', '@param string $s', '@return string', '@throws void') . 'public function m(int $count, string $s): string {}',
+                null],
+            'everything declared' => [$class,
+                $doc('@param int $n', '@psalm-param string $s', '@return string', '@phpstan-throws void') . 'public function m(int $n, string $s): string {}',
+                null],
+            'interface' => [$interface, 'public function m(int $n): string {}',
+                'DocumentedContract::m() for parameter #0 would be inherited'],
+            'no ancestor' => ['class Target', 'public function m(int $n): string {}', null],
+        ];
+    }
+
+    #[DataProvider('inheritance')]
+    public function testInheritedPhpDocIsAPreRunError(string $declaration, string $method, ?string $error): void
+    {
+        $signature = (new TypeResolver())->resolve(TargetFactory::method($method, '', $declaration));
+
+        if ($error === null) {
+            self::assertSame([], self::messages($signature));
+        } else {
+            self::assertOneErrorContaining($error, $signature);
+            self::assertStringContainsString('PHPDoc inheritance is not supported in Stage 1', self::messages($signature)[0]);
+        }
+    }
+
+    public function testPrivateParentMethodIsNotInherited(): void
+    {
+        $method = TargetFactory::method(
+            'private function hidden(int $n): void {} public function m(int $n, string $s): string {}',
+            '',
+            'class Target extends \Pront\Tests\Type\Fixtures\Documented',
+        );
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod($method->class, 'hidden'));
+
+        self::assertSame([], self::messages($signature));
+    }
+
+    public function testTraitAliasesComeFromTheTrait(): void
+    {
+        $signature = (new TypeResolver())->resolve(TargetFactory::method('use Fx\WithAlias;'));
+
+        self::assertNull($signature->return);
+        self::assertOneErrorContaining('type alias TraitMoney (@phpstan-type) is not supported', $signature);
+    }
+
+    public function testNativeParentResolvesToTheParentClass(): void
+    {
+        $signature = self::resolve([], 'public function m(): parent {}', '', 'class Target extends \Exception');
+
+        self::assertSame('Exception', $signature->return?->describe());
+    }
+
+    public function testClosureSelfResolvesAgainstItsScope(): void
+    {
+        $closure =
+            /**
+             * @return self
+             */
+            static fn(): mixed => null;
+        $signature = (new TypeResolver())->resolve(new \ReflectionFunction($closure));
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('self(' . self::class . ')', $signature->return?->describe());
+    }
+
+    public function testImportAfterTheDeclarationDoesNotApply(): void
+    {
+        $signature = self::resolve(['@return Square'], 'public function m() {}', '', 'class Target', 'use Pront\Tests\Type\Fixtures\Sub\Square;');
+
+        self::assertOneErrorContaining('unknown class Pront\Tests\Type\Generated\\', $signature);
+    }
+
+    public function testSelfEnumCaseReferenceIsDetected(): void
+    {
+        $signature = self::resolve(['@return self::Hearts'], 'public function m() {}', '', 'enum Target', '');
+
+        self::assertOneErrorContaining('enum case reference self::Hearts', $signature);
+    }
+
+    public function testEvaluatedCodeFallsBackToTheClassNamespace(): void
+    {
+        eval(<<<'PHP'
+            namespace Pront\Tests\Type\Evaluated;
+            class Target { /** @return Target */ public function m() {} }
+            PHP);
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod('Pront\Tests\Type\Evaluated\Target', 'm'));
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('Pront\Tests\Type\Evaluated\Target', $signature->return?->describe());
     }
 }

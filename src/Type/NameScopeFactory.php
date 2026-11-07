@@ -38,8 +38,13 @@ final class NameScopeFactory
     ): NameScope {
         $file = $function->getFileName();
         $line = $function->getStartLine();
-        if ($file === false || $line === false) {
-            return new NameScope($function->getNamespaceName(), [], $class, $aliases, $templates);
+        if ($file === false || $line === false || !is_file($file)) {
+            // Internal or eval()'d code: no source to read imports from.
+            $namespace = $function instanceof \ReflectionMethod
+                ? $function->getDeclaringClass()->getNamespaceName()
+                : $function->getNamespaceName();
+
+            return new NameScope($namespace, [], $class, $aliases, $templates);
         }
 
         $stmts = $this->parse($file);

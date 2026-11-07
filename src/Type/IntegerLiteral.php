@@ -10,6 +10,24 @@ namespace Pront\Type;
  */
 final class IntegerLiteral
 {
+    /**
+     * Why a literal must not be used, or null when it is plain decimal. PHPStan 2.x reads an
+     * integer literal with an `(int)` cast, so `0x1F`, `0b11` and `0o17` read as 0 and `010` as 10,
+     * unlike PHP; Pront rejects them instead of picking one reading.
+     */
+    public static function ambiguity(string $literal): ?string
+    {
+        $digits = ltrim(str_replace('_', '', $literal), '+-');
+        if (strlen($digits) < 2 || $digits[0] !== '0') {
+            return null;
+        }
+
+        $php = self::parse($literal);
+
+        return ($php === null ? 'not a valid PHP integer literal' : "PHP reads it as {$php}")
+            . ', PHPStan 2.x as ' . (int) $literal . '; write it in decimal';
+    }
+
     public static function parse(string $literal): ?int
     {
         $text = strtolower(str_replace('_', '', $literal));

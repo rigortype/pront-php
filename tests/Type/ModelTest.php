@@ -63,6 +63,28 @@ final class ModelTest extends TestCase
         self::assertSame($expected, IntegerLiteral::parse($literal));
     }
 
+    /**
+     * @return array<string, array{string, ?string}>
+     */
+    public static function ambiguousLiterals(): array
+    {
+        return [
+            'decimal' => ['42', null],
+            'zero' => ['0', null],
+            'negative zero' => ['-0', null],
+            'hex' => ['0x1F', 'PHP reads it as 31, PHPStan 2.x as 0; write it in decimal'],
+            'negative hex' => ['-0x1F', 'PHP reads it as -31, PHPStan 2.x as 0; write it in decimal'],
+            'legacy octal' => ['010', 'PHP reads it as 8, PHPStan 2.x as 10; write it in decimal'],
+            'invalid octal' => ['08', 'not a valid PHP integer literal, PHPStan 2.x as 8; write it in decimal'],
+        ];
+    }
+
+    #[DataProvider('ambiguousLiterals')]
+    public function testAmbiguousIntegerLiteral(string $literal, ?string $expected): void
+    {
+        self::assertSame($expected, IntegerLiteral::ambiguity($literal));
+    }
+
     public function testUnionFlattensAndDeduplicates(): void
     {
         $union = UnionType::of(new IntType(), UnionType::of(new StringType(), new IntType()), new NullType());
@@ -167,7 +189,16 @@ final class ModelTest extends TestCase
             'unchecked in int' => [new UncheckedType('numeric', ''), $int, Certainty::Maybe],
             'unchecked in mixed' => [new UncheckedType('numeric', ''), new MixedType(), Certainty::Yes],
             'int in int or unchecked' => [$int, UnionType::of($int, new UncheckedType('object', '')), Certainty::Yes],
-            'string in int or unchecked' => [$string, UnionType::of($int, new UncheckedType('object', '')), Certainty::Maybe],
+            'string in int or object' => [$string, UnionType::of($int, new UncheckedType('object', '')), Certainty::No],
+            'string in int or callable' => [$string, UnionType::of($int, new UncheckedType('callable', '')), Certainty::Maybe],
+            'list in iterable' => [new ListType($int), new UncheckedType('iterable', ''), Certainty::Yes],
+            'unchecked in iterable' => [new UncheckedType('Traversable<int>', ''), new UncheckedType('iterable', ''), Certainty::Maybe],
+            'range above upper bound' => [new IntType(0, 11), new IntType(0, 10), Certainty::No],
+            'literal in range' => [new LiteralType(10), new IntType(0, 10), Certainty::Yes],
+            'literal above range' => [new LiteralType(11), new IntType(0, 10), Certainty::No],
+            'literal below range' => [new LiteralType(-1), new IntType(0, 10), Certainty::No],
+            'shape with an extra key' => [new ArrayShapeType(['a' => $int, 'b' => $int]), new ArrayShapeType(['a' => $int]), Certainty::No],
+            'shape with a missing key' => [new ArrayShapeType(['a' => $int]), new ArrayShapeType(['a' => $int, 'b' => $int]), Certainty::No],
         ];
     }
 

@@ -43,13 +43,13 @@ final class PhpDocTypeConverter
     private const array OTHER_KEYWORDS = [
         'non-positive-int', 'non-zero-int', 'lowercase-string', 'uppercase-string', 'literal-string',
         'class-string', 'interface-string', 'trait-string', 'enum-string', 'callable-string',
-        'array-key', 'scalar', 'empty-scalar', 'non-empty-scalar', 'number', 'numeric',
+        'scalar', 'empty-scalar', 'non-empty-scalar', 'number', 'numeric',
         'numeric-string', 'non-empty-lowercase-string', 'non-empty-uppercase-string', 'truthy-string',
         'non-falsy-string', 'non-empty-literal-string', 'associative-array', 'non-empty-array',
         'iterable', 'callable', 'pure-callable', 'pure-closure', 'resource', 'closed-resource',
         'open-resource', 'object', 'callable-object', 'callable-array', 'non-empty-mixed', 'empty',
         '__always-list', 'key-of', 'value-of', 'int-mask', 'int-mask-of', 'template-type', 'new',
-        'max', 'min',
+        'decimal-int-string', 'non-decimal-int-string', 'static-closure', 'static-pure-closure', 'max', 'min',
     ];
 
     /**
@@ -66,10 +66,7 @@ final class PhpDocTypeConverter
             $node instanceof ArrayShapeNode => $this->shape($node, $scope, $errors),
             $node instanceof ObjectShapeNode => $this->error($errors, "object shape {$node} is not supported in Stage 1"),
             $node instanceof InvalidTypeNode => $this->error($errors, "type {$node} does not parse"),
-            $node instanceof ArrayTypeNode => new UncheckedType(
-                self::written($node),
-                "not in the Stage 1 list; write list<{$node->type}> or array<int|string, {$node->type}>",
-            ),
+            $node instanceof ArrayTypeNode => $this->keyedArray(null, $node->type, $node, $scope, $errors),
             $node instanceof IntersectionTypeNode => self::unsupported($node, 'intersection types are not in the Stage 1 list'),
             $node instanceof CallableTypeNode => self::unsupported($node, 'callable types are not in the Stage 1 list'),
             $node instanceof ThisTypeNode => self::unsupported($node, 'not in the Stage 1 list'),
@@ -104,6 +101,7 @@ final class PhpDocTypeConverter
             'list' => new ListType(new MixedType()),
             'non-empty-list' => new ListType(new MixedType(), true),
             'array' => ArrayType::native(),
+            'array-key' => UnionType::of(new IntType(), new StringType()),
             default => null,
         };
         if ($type !== null) {
@@ -219,25 +217,13 @@ final class PhpDocTypeConverter
         }
 
         if ($base === 'array') {
-            if (count($arguments) !== 2) {
-                return new UncheckedType(
-                    (string) $node,
-                    'not in the Stage 1 list; write array<K, V> with an explicit key type (int, string or int|string)',
-                );
-            }
-            $key = $this->convert($arguments[0], $scope, $errors);
-            $value = $this->convert($arguments[1], $scope, $errors);
-            if ($key === null || $value === null) {
-                return null;
-            }
-            if (!in_array($key->describe(), ['int', 'string', 'int|string', 'string|int'], true)) {
-                return new UncheckedType(
-                    (string) $node,
-                    "array key type {$arguments[0]} is not in the Stage 1 list (int, string or int|string)",
-                );
+            if (!in_array(count($arguments), [1, 2], true)) {
+                return $this->error($errors, "{$node} takes one or two type arguments");
             }
 
-            return new ArrayType($key, $value);
+            return count($arguments) === 1
+                ? $this->keyedArray(null, $arguments[0], $node, $scope, $errors)
+                : $this->keyedArray($arguments[0], $arguments[1], $node, $scope, $errors);
         }
 
         $failed = false;
@@ -260,6 +246,29 @@ final class PhpDocTypeConverter
     }
 
     /**
+     * `array<K, V>`, `array<V>` and `V[]`: PHPStan reads the last two as `array<int|string, V>`
+     * (`array-key` keys). K must be `int`, `string` or `int|string` (ADR-0014 section 3).
+     *
+     * @param list<string> $errors
+     */
+    private function keyedArray(?TypeNode $keyNode, TypeNode $valueNode, TypeNode $node, NameScope $scope, array &$errors): ?Type
+    {
+        $key = $keyNode === null ? UnionType::of(new IntType(), new StringType()) : $this->convert($keyNode, $scope, $errors);
+        $value = $this->convert($valueNode, $scope, $errors);
+        if ($key === null || $value === null) {
+            return null;
+        }
+        if (!in_array($key->describe(), ['int', 'string', 'int|string', 'string|int'], true)) {
+            return new UncheckedType(
+                self::written($node),
+                "array key type {$key->describe()} is not in the Stage 1 list (int, string or int|string)",
+            );
+        }
+
+        return new ArrayType($key, $value);
+    }
+
+    /**
      * `int<a, b>`: each bound is an integer literal, `min` or `max` (ADR-0003 item 3).
      *
      * @param list<string> $errors
@@ -279,7 +288,12 @@ final class PhpDocTypeConverter
                     IntegerLiteral::parse($bound->constExpr->value),
                 default => false,
             };
-            if ($value === false) {
+            $ambiguity = $bound instanceof ConstTypeNode && $bound->constExpr instanceof ConstExprIntegerNode
+                ? IntegerLiteral::ambiguity($bound->constExpr->value)
+                : null;
+            if ($ambiguity !== null) {
+                $errors[] = "integer-range bound {$bound} in {$node}: {$ambiguity}";
+            } elseif ($value === false) {
                 $errors[] = "integer-range bound {$bound} in {$node} is not an integer literal, "
                     . ($i === 0 ? 'min' : 'max') . '; constant expressions are not supported in Stage 1';
             } elseif ($value === null) {
@@ -306,6 +320,10 @@ final class PhpDocTypeConverter
     {
         $expr = $node->constExpr;
         if ($expr instanceof ConstExprIntegerNode) {
+            $ambiguity = IntegerLiteral::ambiguity($expr->value);
+            if ($ambiguity !== null) {
+                return $this->error($errors, "integer literal {$expr}: {$ambiguity}");
+            }
             $value = IntegerLiteral::parse($expr->value);
 
             return $value === null
@@ -355,6 +373,11 @@ final class PhpDocTypeConverter
         $nextIndex = 0;
         $failed = false;
         foreach ($node->items as $item) {
+            if ($item->keyName instanceof ConstExprIntegerNode && IntegerLiteral::ambiguity($item->keyName->value) !== null) {
+                $errors[] = "array shape {$node}: key {$item->keyName}: " . IntegerLiteral::ambiguity($item->keyName->value);
+                $failed = true;
+                continue;
+            }
             $key = match (true) {
                 $item->keyName === null => $nextIndex,
                 $item->keyName instanceof ConstExprIntegerNode => IntegerLiteral::parse($item->keyName->value),

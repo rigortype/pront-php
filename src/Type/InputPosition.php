@@ -35,6 +35,8 @@ final class InputPosition
             $type instanceof VoidType, $type instanceof NeverType => "{$type->describe()} is not an input type",
             $type instanceof ClassType, $type instanceof SelfType, $type instanceof StaticType =>
                 "class type {$type->describe()} cannot be generated until Stage 2",
+            $type instanceof EnumType && (new \ReflectionEnum($type->name))->getCases() === [] =>
+                "enum {$type->name} has no cases, so no value can be generated",
             $type instanceof NullType && !$inUnion => 'null alone is not an input type in Stage 1 (use ?T or a union)',
             $type instanceof ArrayType && $type->describe() === 'array' =>
                 'array has no element type; declare one in PHPDoc (list<T>, array<K, V> or an array shape)',

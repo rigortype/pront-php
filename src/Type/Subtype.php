@@ -28,7 +28,11 @@ final class Subtype
             return Certainty::any(array_map(static fn(Type $m): Certainty => self::check($sub, $m), $super->members));
         }
 
-        if ($sub instanceof UncheckedType || $super instanceof UncheckedType) {
+        if ($super instanceof UncheckedType && !$sub instanceof UncheckedType) {
+            return self::intoNativeOutsideList($sub, $super);
+        }
+
+        if ($sub instanceof UncheckedType) {
             return Certainty::Maybe;
         }
 
@@ -69,6 +73,24 @@ final class Subtype
                 $sub instanceof StaticType && is_a($sub->class, $super->class, true),
             ),
             default => Certainty::No,
+        };
+    }
+
+    /**
+     * The native `iterable` and `object` are outside the Stage 1 list, but whether a Stage 1 type
+     * narrows them is still decidable: every array-like type is iterable, every class-like type
+     * an object.
+     */
+    private static function intoNativeOutsideList(Type $sub, UncheckedType $super): Certainty
+    {
+        $arrayLike = $sub instanceof ListType || $sub instanceof ArrayType || $sub instanceof ArrayShapeType;
+        $classLike = $sub instanceof ClassType || $sub instanceof EnumType
+            || $sub instanceof SelfType || $sub instanceof StaticType;
+
+        return match (true) {
+            $super->written === 'iterable' && $arrayLike, $super->written === 'object' && $classLike => Certainty::Yes,
+            $super->written === 'iterable', $super->written === 'object' => Certainty::No,
+            default => Certainty::Maybe,
         };
     }
 
