@@ -30,7 +30,10 @@ Facts (packagist, 2026-11-07): `phpstan/phpdoc-parser` 2.4.1 (`php ^7.4 || ^8.0`
 6. Development dependencies: Pront's own tests run on PHPUnit `^13.4` in `require-dev` (amended
    2026-11-08 with the first test, issue #15). It is the newest stable major; 13.4.6 was verified
    installing and running on PHP 8.5.12 (it requires PHP `>=8.4.1`). It is dev-only, so users never
-   install it. A later major is adopted by amending this item.
+   install it. A later major is adopted by amending this item. Its dependency chain requires
+   further extensions for development only (among them `ext-mbstring` and `ext-dom`, per the
+   lock file), so Pront's own suite always runs with mbstring loaded; the mbstring-absent path of
+   item 4 needs a separate check once code depends on it.
 7. `composer.json` and `composer.lock` are updated in the first Stage 1 implementation change, not by
    this ADR.
 

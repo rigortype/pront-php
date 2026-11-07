@@ -32,9 +32,13 @@ whitespace:
 	rc=$$?; rm -f "$$idx"; exit $$rc
 
 # The tests run when `make setup` has installed PHPUnit; otherwise the skip is reported, not silent.
+# REQUIRE_TESTS=1 (the merge gate, docs/agents/contribution-flow.md) turns the skip into a failure.
 verify-changed: whitespace docs-check docs-check-selftest
 	@if [ -x vendor/bin/phpunit ]; then \
 	  $(MAKE) --no-print-directory test; \
+	elif [ "$(REQUIRE_TESTS)" = 1 ]; then \
+	  echo "verify-changed: tests NOT run and REQUIRE_TESTS=1 (vendor/bin/phpunit missing; run make setup)" >&2; \
+	  exit 1; \
 	else \
 	  echo "verify-changed: tests NOT run (vendor/bin/phpunit missing; run make setup)" >&2; \
 	fi
