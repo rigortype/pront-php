@@ -66,7 +66,7 @@ final class BinProntTest extends TestCase
             ['Pre-run errors (1):', 'FAIL A::m', '0 passed, 1 failed', '1 pre-run error;'],
         ];
         yield 'unverifiable' => [
-            "/** @param int<0, 10> \$x */\n#[Verify] #[\\Pront\\Attribute\\Ensures(static function (int \$return): bool { return true; })]\n"
+            "/** @param int<0, 10> \$x */\n#[Verify(seed: 1)] #[\\Pront\\Attribute\\Ensures(static function (int \$return): bool { return true; })]\n"
                 . "public static function m(int \$x): int|string { return \$x > 5 ? 's' : \$x; }",
             [],
             2,
@@ -234,7 +234,8 @@ final class BinProntTest extends TestCase
      */
     public static function changedTargets(): iterable
     {
-        $failing = 'public function __construct(int $base) {} #[Verify] public function m(int $x): void { throw new \Error(); }';
+        // Seeds are pinned: which draws a minimal buffer holds depends on the drawn edge selectors.
+        $failing = 'public function __construct(int $base) {} #[Verify(seed: 1)] public function m(int $x): void { throw new \Error(); }';
         $readMore = 'The replay read 6 draws of the 4 recorded: the token is a shrink candidate or a stopped attempt, or the parameters of the target changed';
         yield 'a parameter was added' => [
             $failing,
@@ -244,13 +245,13 @@ final class BinProntTest extends TestCase
         ];
         yield 'a parameter was added and the bug fixed' => [
             $failing,
-            'public function __construct(int $base) {} #[Verify] public function m(int $x, int $y): void {}',
+            'public function __construct(int $base) {} #[Verify(seed: 1)] public function m(int $x, int $y): void {}',
             0,
             ['PASS A::m: no longer reproduces', Engine::REPLAY_LIMITS, $readMore, '1 passed, 0 failed', '0 replay errors'],
         ];
         yield 'a parameter changed its type' => [
             $failing,
-            'public function __construct(int $base) {} #[Verify] public function m(bool $x): void {}',
+            'public function __construct(int $base) {} #[Verify(seed: 1)] public function m(bool $x): void {}',
             2,
             ['The recorded draws no longer match the parameters of A::m', 'ERROR A::m: the replay did not fail, but on another input than the recorded one', '1 replay error'],
         ];
@@ -261,8 +262,8 @@ final class BinProntTest extends TestCase
             ["    \$x = 10\n", 'PASS A::m: no longer reproduces', 'The replay read 2 draws of the 2 recorded, repairing some:'],
         ];
         yield 'a fixed constructor, recorded before the parameters were drawn' => [
-            'public function __construct(int $base) { intdiv($base, 0); } #[Verify] public function m(int $x): void {}',
-            'public function __construct(int $base) {} #[Verify] public function m(int $x): void {}',
+            'public function __construct(int $base) { intdiv($base, 0); } #[Verify(seed: 1)] public function m(int $x): void {}',
+            'public function __construct(int $base) {} #[Verify(seed: 1)] public function m(int $x): void {}',
             0,
             ["    \$self = new \\A(base: 0)\n    (the attempt stopped while building \$self: the parameters below were not drawn)\n    \$x = 0\n", 'PASS A::m: no longer reproduces', 'The replay read 4 draws of the 2 recorded:'],
         ];
@@ -384,7 +385,7 @@ final class BinProntTest extends TestCase
 
     public function testReplayOfAnUnverifiableTokenExitsWithTwo(): void
     {
-        $project = self::project("/** @param int<0, 10> \$x */\n#[Verify] #[\\Pront\\Attribute\\Ensures(static function (int \$return): bool { return true; })]\n"
+        $project = self::project("/** @param int<0, 10> \$x */\n#[Verify(seed: 1)] #[\\Pront\\Attribute\\Ensures(static function (int \$return): bool { return true; })]\n"
             . "public static function m(int \$x): int|string { return \$x > 5 ? 's' : \$x; }");
         [, $stdout] = self::pront($project, []);
 
