@@ -55,11 +55,19 @@ final readonly class Outcome
     /**
      * A failure identified by the throwable's class, throw site and call stack (file and line of
      * each frame; a frame without a file, such as an internal call, contributes `-`).
+     *
+     * `$outerFrames` drops that many outermost frames of the stack trace: a caller that reaches the
+     * same code through different call paths (the engine runs a fresh trial and a shrink candidate
+     * from different places) drops the frames above its own call into that code, so the same
+     * failure keeps the same signature on both paths.
+     *
+     * @param int<0, max> $outerFrames
      */
-    public static function fromThrowable(\Throwable $failure): self
+    public static function fromThrowable(\Throwable $failure, int $outerFrames = 0): self
     {
         $sites = [sprintf('%s:%d', $failure->getFile(), $failure->getLine())];
-        foreach ($failure->getTrace() as $frame) {
+        $trace = $failure->getTrace();
+        foreach (array_slice($trace, 0, max(0, count($trace) - $outerFrames)) as $frame) {
             $sites[] = isset($frame['file']) ? sprintf('%s:%d', $frame['file'], $frame['line'] ?? 0) : '-';
         }
 
