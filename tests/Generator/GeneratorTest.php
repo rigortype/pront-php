@@ -170,6 +170,7 @@ final class GeneratorTest extends TestCase
     {
         $all = EdgeValues::strings(false, false);
         self::assertSame(['', ' ', '0', '00', '1.5', "\n", "\0", str_repeat('a', 1000)], array_slice($all, 0, 8));
+        self::assertSame([...EdgeValues::STRING, ...EdgeValues::INVALID_UTF8], array_values(array_diff($all, [str_repeat('a', 1000)])));
         self::assertContains("\xFF", $all);
         self::assertContains("\xE6\x97", $all);
         // ADR-0007: the family emoji is 7 code points and 25 bytes; supplementary kanji take 4 bytes.
