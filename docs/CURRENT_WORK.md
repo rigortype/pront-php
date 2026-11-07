@@ -28,5 +28,7 @@ If this file disagrees with an ADR or an issue, this file is the one that is wro
 ## Next
 
 1. User: approve #7 (CI job) and #8 (branch protection); both are repository settings.
-2. Then begin Stage 1 (ADR-0014): split it into implementation issues (engine and choice buffer,
-   resolver, `#[Verify]` and discovery, CLI and exit codes), each run as a `pront-lane` lane.
+2. Stage 1 is split into issues #15-#23 (milestone `Stage 1`, label `ready-for-agent`): #15 skeleton
+   and dependencies first (a dev test runner is an ask-first dependency), then #16 choice buffer,
+   #17 resolver, #18 generators, #19 shrinker, #20 attributes and discovery, #21 engine and journal,
+   #22 oracles, #23 CLI. Run each as a `pront-lane` lane, one at a time on shared files.
