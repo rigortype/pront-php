@@ -119,4 +119,30 @@ final class IntOrderTest extends TestCase
         $this->expectException(InvalidChoice::class);
         IntOrder::decode($magnitude, $side, $min, $max);
     }
+
+    /**
+     * @return iterable<string, array{int, int, int, int, array{int, int}}>
+     */
+    public static function clamps(): iterable
+    {
+        yield 'valid unchanged' => [3, 1, -4, 4, [3, 1]];
+        yield 'magnitude past max' => [9, 0, -4, 4, [4, 0]];
+        yield 'magnitude past min' => [9, 1, -4, 4, [3, 1]];
+        yield 'side above 1' => [2, 7, -4, 4, [2, 1]];
+        yield 'empty negative side moves to the same distance' => [2, 1, 0, 10, [3, 0]];
+        yield 'empty negative side, then the limit' => [20, 1, 5, 10, [5, 0]];
+        yield 'empty side at int max' => [PHP_INT_MAX, 1, 0, PHP_INT_MAX, [PHP_INT_MAX, 0]];
+        yield 'negative range' => [50, 1, -20, -10, [9, 1]];
+        yield 'full width' => [PHP_INT_MAX, 1, PHP_INT_MIN, PHP_INT_MAX, [PHP_INT_MAX, 1]];
+    }
+
+    /**
+     * @param array{int, int} $expected
+     */
+    #[DataProvider('clamps')]
+    public function testClampGivesTheNearestValidPosition(int $magnitude, int $side, int $min, int $max, array $expected): void
+    {
+        self::assertSame($expected, IntOrder::clamp($magnitude, $side, $min, $max));
+        IntOrder::decode($expected[0], $expected[1], $min, $max);
+    }
 }
