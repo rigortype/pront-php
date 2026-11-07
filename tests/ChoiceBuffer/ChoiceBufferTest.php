@@ -162,4 +162,39 @@ final class ChoiceBufferTest extends TestCase
         $floats = new FloatCodec([0.5]);
         self::assertSame(0.5, ChoiceBuffer::replay([[2, 0]], $floats)->drawFloat());
     }
+
+    public function testSelectorFollowsTheEdgeRatio(): void
+    {
+        $count = static function (float $ratio): array {
+            $buffer = ChoiceBuffer::fresh(Prng::forTrial(21, (int) ($ratio * 100)));
+            $hits = [0, 0, 0];
+            $edges = 0;
+            for ($i = 0; $i < 5000; $i++) {
+                $selected = $buffer->drawSelector(3, $ratio);
+                if ($selected !== null) {
+                    $edges++;
+                    $hits[$selected]++;
+                }
+            }
+
+            return [$edges, $hits];
+        };
+        self::assertSame(0, $count(0.0)[0]);
+        [$all, $hits] = $count(1.0);
+        self::assertSame(5000, $all);
+        foreach ($hits as $hit) {
+            self::assertGreaterThan(1500, $hit, 'edge candidates are uniform');
+        }
+        $tenth = $count(0.1)[0];
+        self::assertGreaterThan(400, $tenth);
+        self::assertLessThan(600, $tenth);
+    }
+
+    public function testLengthRangeUpToIntMaxDoesNotOverflow(): void
+    {
+        self::assertSame(0, ChoiceBuffer::replay([])->drawLength(0, PHP_INT_MAX));
+        self::assertSame(PHP_INT_MAX, ChoiceBuffer::replay([[PHP_INT_MAX]])->drawLength(0, PHP_INT_MAX));
+        $value = ChoiceBuffer::fresh(Prng::forTrial(1, 2))->drawLength(0, PHP_INT_MAX);
+        self::assertGreaterThanOrEqual(0, $value);
+    }
 }

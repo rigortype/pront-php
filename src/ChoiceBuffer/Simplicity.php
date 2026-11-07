@@ -53,7 +53,9 @@ final class Simplicity
     }
 
     /**
-     * Shortlex over consumed buffers: fewer draws is simpler; at equal length, draw by draw.
+     * Shortlex over consumed buffers: fewer draws is simpler; at equal length, draw by draw. Pass
+     * `ChoiceBuffer::consumed()`, never a recording: a recording's missing slots only exist once a
+     * replay has read them as zeros (ADR-0002 section 4).
      *
      * @param list<Draw> $a
      * @param list<Draw> $b

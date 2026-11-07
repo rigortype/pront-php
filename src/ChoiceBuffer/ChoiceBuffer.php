@@ -104,7 +104,7 @@ final class ChoiceBuffer
      */
     public function drawBool(): bool
     {
-        return $this->drawBelow(2, DrawKind::Bool) === 1;
+        return $this->drawUpTo(1, DrawKind::Bool) === 1;
     }
 
     /**
@@ -112,7 +112,7 @@ final class ChoiceBuffer
      */
     public function drawIsNull(): bool
     {
-        return $this->drawBelow(2, DrawKind::Nullable) === 0;
+        return $this->drawUpTo(1, DrawKind::Nullable) === 0;
     }
 
     /**
@@ -124,7 +124,7 @@ final class ChoiceBuffer
             throw new \InvalidArgumentException('An index draw needs at least one choice');
         }
 
-        return $this->drawBelow($count, DrawKind::Index);
+        return $this->drawUpTo($count - 1, DrawKind::Index);
     }
 
     /**
@@ -150,7 +150,7 @@ final class ChoiceBuffer
             throw new \InvalidArgumentException("Invalid length range [{$min}, {$max}]");
         }
 
-        return $min + $this->drawBelow($max - $min + 1, DrawKind::Length);
+        return $min + $this->drawUpTo($max - $min, DrawKind::Length);
     }
 
     /**
@@ -200,14 +200,17 @@ final class ChoiceBuffer
     }
 
     /**
-     * A single-slot draw over [0, `$count`) whose position is the value.
+     * A single-slot draw over [0, `$maxPosition`] whose position is the value. An inclusive maximum,
+     * so a length range up to `PHP_INT_MAX` does not overflow.
+     *
+     * @param int<0, max> $maxPosition
      */
-    private function drawBelow(int $count, DrawKind $kind): int
+    private function drawUpTo(int $maxPosition, DrawKind $kind): int
     {
-        $this->begin(static fn(Prng $prng): array => [$prng->uniformUnsigned($count - 1)]);
+        $this->begin(static fn(Prng $prng): array => [$prng->uniformUnsigned($maxPosition)]);
         $slot = $this->slot();
-        if ($slot >= $count) {
-            throw new InvalidChoice("{$kind->name} slot {$slot} is outside [0, {$count})");
+        if ($slot > $maxPosition) {
+            throw new InvalidChoice("{$kind->name} slot {$slot} is outside [0, {$maxPosition}]");
         }
         $this->end($kind);
 

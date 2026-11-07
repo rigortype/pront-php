@@ -103,4 +103,25 @@ final class PrngTest extends TestCase
             self::assertTrue($prng->chance(1.0));
         }
     }
+
+    /**
+     * Every bit of a mid-width range (41 bits) is reached both set and clear; a mask that misses low
+     * bits, or a mapping that skews them, fails this.
+     */
+    public function testMidWidthRangeReachesEveryBit(): void
+    {
+        $prng = Prng::forTrial(40, 0);
+        $set = array_fill(0, 40, 0);
+        for ($i = 0; $i < 2000; $i++) {
+            $value = $prng->intInRange(0, 1 << 40);
+            self::assertLessThanOrEqual(1 << 40, $value);
+            for ($bit = 0; $bit < 40; $bit++) {
+                $set[$bit] += ($value >> $bit) & 1;
+            }
+        }
+        foreach ($set as $bit => $count) {
+            self::assertGreaterThan(850, $count, "bit {$bit} is set about half the time");
+            self::assertLessThan(1150, $count, "bit {$bit} is clear about half the time");
+        }
+    }
 }

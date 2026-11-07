@@ -152,4 +152,32 @@ final class CharactersTest extends TestCase
         self::assertGreaterThan(300, $counts[2]);
         self::assertGreaterThan(130, $counts[3]);
     }
+
+    /**
+     * Within a class the whole class is reached, not only its first code points.
+     */
+    public function testFreshCharactersSpreadWithinEachClass(): void
+    {
+        $prng = Prng::forTrial(13, 0);
+        $classes = Characters::classes();
+        $low = [PHP_INT_MAX, PHP_INT_MAX, PHP_INT_MAX, PHP_INT_MAX];
+        $high = [-1, -1, -1, -1];
+        for ($i = 0; $i < 6000; $i++) {
+            $codePoint = Characters::fresh($prng);
+            foreach ($classes as $index => $ranges) {
+                if (self::contains($ranges, $codePoint)) {
+                    $low[$index] = min($low[$index], $codePoint);
+                    $high[$index] = max($high[$index], $codePoint);
+                }
+            }
+        }
+        self::assertLessThan(0x30, $low[0]);
+        self::assertGreaterThan(0x70, $high[0]);
+        self::assertLessThan(0x2000, $low[1]);
+        self::assertGreaterThan(0xF000, $high[1]);
+        self::assertLessThan(0x20000, $low[2]);
+        self::assertGreaterThan(0x100000, $high[2]);
+        self::assertLessThan(0x10, $low[3]);
+        self::assertGreaterThan(0x3000, $high[3], 'the combining part of the last class is reached');
+    }
 }

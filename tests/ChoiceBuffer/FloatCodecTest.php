@@ -121,4 +121,30 @@ final class FloatCodecTest extends TestCase
             self::assertNotSame(2, $codec->freshSlots($prng)[0]);
         }
     }
+
+    /**
+     * Fresh kind 1 values are uniform bit patterns: both signs, tiny and huge exponents.
+     */
+    public function testFreshKindOneSpreadsOverSignAndExponent(): void
+    {
+        $codec = new FloatCodec();
+        $prng = Prng::forTrial(9, 9);
+        $negative = $huge = $tiny = $kindOne = 0;
+        while ($kindOne < 1000) {
+            $slots = $codec->freshSlots($prng);
+            if ($slots[0] !== 1) {
+                continue;
+            }
+            $kindOne++;
+            $value = $codec->kindOne($slots[1], $slots[2], $slots[3]);
+            $negative += $value < 0 ? 1 : 0;
+            $huge += abs($value) > 1e100 ? 1 : 0;
+            $tiny += abs($value) < 1e-100 ? 1 : 0;
+        }
+        // Expected about 500, 334 and 333.
+        self::assertGreaterThan(420, $negative);
+        self::assertLessThan(580, $negative);
+        self::assertGreaterThan(250, $huge);
+        self::assertGreaterThan(250, $tiny);
+    }
 }
