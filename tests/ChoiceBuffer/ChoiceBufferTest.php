@@ -137,6 +137,8 @@ final class ChoiceBufferTest extends TestCase
         yield 'float kind 3' => [[[3]], static fn(ChoiceBuffer $b) => $b->drawFloat()];
         yield 'float kind 1 zero pattern' => [[[1, 0, 0, 0]], static fn(ChoiceBuffer $b) => $b->drawFloat()];
         yield 'float edge past table' => [[[2, 7]], static fn(ChoiceBuffer $b) => $b->drawFloat()];
+        yield 'nullable 2' => [[[2]], static fn(ChoiceBuffer $b) => $b->drawIsNull()];
+        yield 'length past max with min' => [[[4]], static fn(ChoiceBuffer $b) => $b->drawLength(2, 5)];
         yield 'character past ordering' => [[[0x10F800]], static fn(ChoiceBuffer $b) => $b->drawCharacter()];
     }
 
@@ -196,5 +198,42 @@ final class ChoiceBufferTest extends TestCase
         self::assertSame(PHP_INT_MAX, ChoiceBuffer::replay([[PHP_INT_MAX]])->drawLength(0, PHP_INT_MAX));
         $value = ChoiceBuffer::fresh(Prng::forTrial(1, 2))->drawLength(0, PHP_INT_MAX);
         self::assertGreaterThanOrEqual(0, $value);
+    }
+
+    public function testLengthSlotIsOffsetByTheMinimum(): void
+    {
+        self::assertSame(5, ChoiceBuffer::replay([[3]])->drawLength(2, 5));
+        $buffer = ChoiceBuffer::fresh(Prng::forTrial(30, 0));
+        $seen = [];
+        for ($i = 0; $i < 200; $i++) {
+            $seen[$buffer->drawLength(2, 5)] = true;
+        }
+        ksort($seen);
+        self::assertSame([2, 3, 4, 5], array_keys($seen));
+    }
+
+    /**
+     * PR decision 11: with no stated maximum the maximum is 16, so a larger minimum is an error for
+     * the generator layer to report, never a silent default.
+     */
+    public function testLengthMinimumAboveTheDefaultMaximumIsRejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        ChoiceBuffer::replay([])->drawLength(17);
+    }
+
+    public function testBoolAndNullableAreEvenFresh(): void
+    {
+        $buffer = ChoiceBuffer::fresh(Prng::forTrial(31, 0));
+        $true = $null = 0;
+        for ($i = 0; $i < 4000; $i++) {
+            $true += $buffer->drawBool() ? 1 : 0;
+            $null += $buffer->drawIsNull() ? 1 : 0;
+        }
+        // Expected 2000 each; the bounds are about 4.4 standard deviations wide.
+        self::assertGreaterThan(1860, $true);
+        self::assertLessThan(2140, $true);
+        self::assertGreaterThan(1860, $null);
+        self::assertLessThan(2140, $null);
     }
 }

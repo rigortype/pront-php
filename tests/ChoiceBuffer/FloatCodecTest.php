@@ -147,4 +147,27 @@ final class FloatCodecTest extends TestCase
         self::assertGreaterThan(250, $huge);
         self::assertGreaterThan(250, $tiny);
     }
+
+    /**
+     * Fresh kind 0 reaches every integer in [-16, 16]; fresh kind 2 reaches every edge entry.
+     */
+    public function testFreshKindZeroAndKindTwoReachEveryValue(): void
+    {
+        $codec = new FloatCodec();
+        $prng = Prng::forTrial(10, 10);
+        $kindZero = [];
+        $kindTwo = [];
+        for ($i = 0; $i < 6000; $i++) {
+            $slots = $codec->freshSlots($prng);
+            if ($slots[0] === 0) {
+                $kindZero[(int) $codec->kindZero($slots[1], $slots[2])] = true;
+            } elseif ($slots[0] === 2) {
+                $kindTwo[$slots[1]] = true;
+            }
+        }
+        ksort($kindZero);
+        ksort($kindTwo);
+        self::assertSame(range(-16, 16), array_keys($kindZero));
+        self::assertSame(array_keys(FloatCodec::ADR_0007_EDGES), array_keys($kindTwo));
+    }
 }
