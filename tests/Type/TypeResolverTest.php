@@ -821,7 +821,9 @@ final class TypeResolverTest extends TestCase
         return [
             'unknown class' => ['@throws Nope', 'unknown class'],
             'not throwable' => ['@throws Circle', 'is not a Throwable'],
-            'not a class name' => ['@throws list<int>', 'is not a class name or void'],
+            'not a class name' => ['@throws list<int>', 'list<int> is not a class name or void'],
+            'keyword' => ['@throws array', 'array is not a class name or void'],
+            'parent without a parent' => ['@throws parent', 'which has no parent class'],
             'void with class' => ['@throws void|\LogicException', '@throws void is combined with exception classes'],
             'unparsable' => ['@throws <', 'does not parse'],
         ];
@@ -876,6 +878,17 @@ final class TypeResolverTest extends TestCase
                 'Documented::m() for parameter $n, parameter $s, return type, @throws would be inherited'],
             'ancestor without tags' => ['class Target extends \Pront\Tests\Type\Fixtures\Untagged',
                 'public function m(int|string|null $x): int {}', null],
+            'restated union in another order' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\RestatedUnion',
+                'public function m(int|string $x): static { return $this; }', null],
+            'unresolvable ancestor parameter' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\Broken',
+                'public function m(int $x): void {}', 'Broken::m() for parameter $x would be inherited'],
+            'unresolvable ancestor @throws' => ['class Target implements \\Pront\\Tests\\Type\\Fixtures\\ThrowsBroken',
+                'public function m(): void {}', 'ThrowsBroken::m() for @throws would be inherited'],
+            'concrete trait method is not a source' => ['class Target', 'use Fx\\Concrete; public function m(int $x): void {}', null],
+            'nested abstract trait method' => ['class Target', 'use Fx\\OuterContracted; public function m(int $x): void {}',
+                'Contracted::m() for parameter $x would be inherited'],
+            'inherited static is late-bound' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\StaticReturning',
+                'public function m(): ?self { return $this; }', 'StaticReturning::m() for return type would be inherited'],
             'restated native types' => ['class Target extends \Pront\Tests\Type\Fixtures\Restating', 'public function m(int $x): void {}', null],
             'constructor by name' => ['class Target extends \Pront\Tests\Type\Fixtures\Constructed',
                 $doc('@param int $x') . 'public function __construct(int $x, int $b) {} public function m(): void {}',
@@ -925,6 +938,10 @@ final class TypeResolverTest extends TestCase
             'interface into itself or another' => ['Figure', 'Figure|\Countable', self::FX . 'Shape'],
             'list keeps int from iterable|int' => ['list<int>', 'iterable|int', 'list<int>|int'],
             'int over int|callable is undecidable' => ['int', 'int|callable', null],
+            'unrelated classes are disjoint' => ['Circle', 'Circle|\\Exception', self::FX . 'Circle|Exception'],
+            'iterable kept beside a non-final class' => ['Circle', 'iterable|Circle', self::FX . 'Circle|unchecked(iterable)'],
+            'iterable kept beside a final class' => ['Fx\\Sub\\Square', 'iterable|Fx\\Sub\\Square', self::FX . 'Sub\\Square|unchecked(iterable)'],
+            'iterable overlaps a Traversable class' => ['\\ArrayObject', 'iterable|\\ArrayObject', 'ArrayObject'],
         ];
     }
 
@@ -935,7 +952,7 @@ final class TypeResolverTest extends TestCase
         self::assertSame([], self::messages($return));
         self::assertSame($expected ?? "unchecked({$phpDoc})", $return->return?->describe());
 
-        if (!str_contains($native, 'Figure')) {
+        if (str_contains($native, 'callable') || $native === 'iterable|int') {
             $input = self::resolve(["@param {$phpDoc} \$x"], "public function m({$native} \$x): void {}");
             self::assertSame($expected, $input->parameters['x']?->describe());
             if ($expected === null) {
@@ -952,7 +969,8 @@ final class TypeResolverTest extends TestCase
         return [
             'Traversable class' => ['\Generator', 'iterable', 'Generator'],
             'Traversable class, nullable' => ['\ArrayObject', '?iterable', 'ArrayObject|null'],
-            'non-final class may have a Traversable subclass' => ['Circle', 'iterable', 'unchecked(Circle)'],
+            'class that is not Traversable' => ['Circle', 'iterable', null],
+            'interface may be implemented by a Traversable class' => ['Figure', 'iterable', 'unchecked(Figure)'],
             'final class that is not Traversable' => ['Fx\Sub\Square', 'iterable', null],
         ];
     }
@@ -968,6 +986,65 @@ final class TypeResolverTest extends TestCase
         } else {
             self::assertSame([], self::messages($signature));
         }
+    }
+
+    public function testNeverPhpDocKeepsNoNativeMember(): void
+    {
+        $signature = self::resolve(['@return never'], 'public function m(): ?int {}');
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('never', $signature->return?->describe());
+    }
+
+    public function testNewInAStringDefaultIsNotAnExpression(): void
+    {
+        $signature = self::resolve(["@param 'new'|'edit' \$mode"], "public function m(string \$mode = 'new'): void {}");
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame("'new'|'edit'", $signature->parameters['mode']?->describe());
+    }
+
+    public function testNewDefaultIsNeverEvaluated(): void
+    {
+        $before = \Pront\Tests\Type\Fixtures\Counter::$made;
+        $leading = self::resolve(['@param positive-int $x'], 'public function m(int|\Pront\Tests\Type\Fixtures\Counter $x = new \Pront\Tests\Type\Fixtures\Counter()): void {}');
+        $nested = self::resolve(['@param positive-int $x'], 'public function m(int|\Pront\Tests\Type\Fixtures\Counter $x = [new \Pront\Tests\Type\Fixtures\Counter()][0]): void {}');
+
+        self::assertSame($before, \Pront\Tests\Type\Fixtures\Counter::$made);
+        self::assertStringContainsString('cannot be generated until Stage 2', self::messages($leading)[0]);
+        self::assertOneErrorContaining('without running code', $nested);
+    }
+
+    public function testNestedTraitKeepsItsOwnScope(): void
+    {
+        $signature = (new TypeResolver())->resolve(TargetFactory::method('use Fx\OuterTemplated;'));
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('unchecked(X)', $signature->return?->describe());
+    }
+
+    public function testNestedTraitInTheSameFileKeepsItsOwnScope(): void
+    {
+        $traits = "/**\n * @template Y\n */\ntrait GenInner { /** @return Y */ public function m(): mixed { return null; } }\n"
+            . "trait GenOuter { use GenInner; }\n";
+        $signature = (new TypeResolver())->resolve(TargetFactory::method('use GenOuter;', $traits));
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('unchecked(Y)', $signature->return?->describe());
+    }
+
+    public function testDeepAncestorChainsResolveOnce(): void
+    {
+        $code = '';
+        for ($i = 0; $i < 25; $i++) {
+            $parent = $i === 0 ? '' : ' extends D' . ($i - 1);
+            $code .= "class D{$i}{$parent} { /** @param int<0, {$i}> \$x */ public function m(int \$x): void {} }\n";
+        }
+        $start = microtime(true);
+        $signature = self::resolve(['@param int<0, 99> $x'], 'public function m(int $x): void {}', '', 'class Target extends D24', $code);
+
+        self::assertSame([], self::messages($signature));
+        self::assertLessThan(5.0, microtime(true) - $start);
     }
 
     public function testConstantNullDefaultAddsNull(): void

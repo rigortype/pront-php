@@ -46,6 +46,9 @@ final class TypeResolver
     private readonly NativeTypeConverter $native;
     private readonly NameScopeFactory $scopes;
 
+    /** @var array<string, ResolvedSignature> methods resolved so far, by `Class::method` */
+    private array $resolvedMethods = [];
+
     public function __construct()
     {
         $config = new ParserConfig([]);
@@ -58,6 +61,16 @@ final class TypeResolver
     }
 
     public function resolve(\ReflectionFunctionAbstract $function): ResolvedSignature
+    {
+        if ($function instanceof \ReflectionMethod) {
+            return $this->resolvedMethods[$function->getDeclaringClass()->getName() . '::' . $function->getName()]
+                ??= $this->resolveUncached($function);
+        }
+
+        return $this->resolveUncached($function);
+    }
+
+    private function resolveUncached(\ReflectionFunctionAbstract $function): ResolvedSignature
     {
         $class = self::declaringClass($function);
         $subject = ($class !== null && $function instanceof \ReflectionMethod ? $class . '::' : '')
@@ -213,8 +226,13 @@ final class TypeResolver
         if (strcasecmp($expression, 'NULL') === 0) {
             return true;
         }
-        if (preg_match('/\bnew\b/i', $expression) === 1) {
-            return preg_match('/\Anew\b/i', $expression) === 1
+        $tokens = array_values(array_filter(
+            token_get_all('<?php ' . $expression),
+            static fn(array|string $token): bool => !is_array($token) || !in_array($token[0], [T_OPEN_TAG, T_WHITESPACE], true),
+        ));
+        $news = array_keys(array_filter($tokens, static fn(array|string $token): bool => is_array($token) && $token[0] === T_NEW));
+        if ($news !== []) {
+            return $news === [0]
                 ? false
                 : "cannot tell whether the default value {$expression} is null without running code";
         }
@@ -379,29 +397,21 @@ final class TypeResolver
                     $void = true;
                     continue;
                 }
-                if (!$node instanceof IdentifierTypeNode) {
-                    $errors->add($subject, "{$node} is not a class name or void");
-                    $failed = true;
-                    continue;
-                }
                 $messages = [];
-                $keyword = strtolower($node->name);
-                $name = match (true) {
-                    $scope->class !== null && ($keyword === 'self' || $keyword === 'static') => $scope->class,
-                    $scope->class !== null && $keyword === 'parent' => (string) get_parent_class($scope->class),
-                    default => $scope->resolveClassName($node->name),
-                };
-                $type = $this->phpDoc->className($name, $messages);
+                $type = $node instanceof IdentifierTypeNode ? $this->phpDoc->convert($node, $scope, $messages) : null;
                 foreach ($messages as $message) {
                     $errors->add($subject, $message);
                 }
-                if ($type instanceof ClassType && is_a($type->name, \Throwable::class, true)) {
-                    $classes[$type->name] = $type->name;
-                } else {
-                    if ($type !== null) {
-                        $errors->add($subject, "{$type->describe()} is not a Throwable");
-                    }
-                    $failed = true;
+                $class = $type === null ? null : Subtype::className($type);
+                if ($class !== null && is_a($class, \Throwable::class, true)) {
+                    $classes[$class] = $class;
+                    continue;
+                }
+                $failed = true;
+                if ($messages === []) {
+                    $errors->add($subject, $class === null
+                        ? PhpDocTypeConverter::written($node) . ' is not a class name or void'
+                        : "{$class} is not a Throwable");
                 }
             }
         }
@@ -449,10 +459,12 @@ final class TypeResolver
         $seen = [];
         foreach (self::ancestorMethods($method) as $inherited) {
             $key = $inherited->getDeclaringClass()->getName() . '::' . $inherited->getName();
-            if (isset($seen[$key])) {
+            // A method reached through several classes or traits is one source.
+            $identity = $inherited->getFileName() . ':' . $inherited->getStartLine() . ':' . $inherited->getName();
+            if (isset($seen[$identity])) {
                 continue;
             }
-            $seen[$key] = true;
+            $seen[$identity] = true;
 
             $theirDoc = $this->parseDoc($inherited->getDocComment());
             $theirTagged = [];
@@ -477,14 +489,14 @@ final class TypeResolver
                 if ($counterpart === null || !in_array($counterpart, $theirTagged, true)) {
                     continue;
                 }
-                if (self::differs($theirs->parameters[$counterpart] ?? null, $own->parameters[$parameter->getName()] ?? null)) {
+                if (self::narrows($theirs->parameters[$counterpart] ?? null, $own->parameters[$parameter->getName()] ?? null, $inherited, $method)) {
                     $slots[] = "parameter \${$parameter->getName()}";
                 }
             }
-            if (!$hasReturnTag && $theirReturnTagged && self::differs($theirs->return, $own->return)) {
+            if (!$hasReturnTag && $theirReturnTagged && self::narrows($theirs->return, $own->return, $inherited, $method)) {
                 $slots[] = 'return type';
             }
-            if (!$hasThrows && $theirs->throws !== null) {
+            if (!$hasThrows && self::throwsTags($theirDoc) !== []) {
                 $slots[] = '@throws';
             }
             if ($slots !== []) {
@@ -497,9 +509,40 @@ final class TypeResolver
         }
     }
 
-    private static function differs(?Type $theirs, ?Type $ours): bool
+    /**
+     * Whether an inherited slot type would change this method's: PHPStan applies an inherited
+     * PHPDoc type only when it is a subtype of the native type (`TypehintHelper::decideType`), so
+     * it matters when it is (or may be) a strict subtype. The ancestor's `static` is late-bound and
+     * is compared as this method's class. An unresolvable side is always reported.
+     */
+    private static function narrows(?Type $theirs, ?Type $ours, \ReflectionMethod $ancestor, \ReflectionMethod $method): bool
     {
-        return $theirs === null || $ours === null || $theirs->describe() !== $ours->describe();
+        if ($theirs === null || $ours === null) {
+            return true;
+        }
+
+        $theirs = self::rebaseStatic($theirs, $ancestor->getDeclaringClass()->getName(), $method->getDeclaringClass()->getName());
+        $into = Subtype::check($theirs, $ours);
+
+        return $into !== Certainty::No && !($into === Certainty::Yes && Subtype::check($ours, $theirs) === Certainty::Yes);
+    }
+
+    /**
+     * @param class-string $from
+     * @param class-string $to
+     */
+    private static function rebaseStatic(Type $type, string $from, string $to): Type
+    {
+        $rebase = static fn(Type $t): Type => self::rebaseStatic($t, $from, $to);
+
+        return match (true) {
+            $type instanceof StaticType && $type->class === $from => new StaticType($to),
+            $type instanceof UnionType => UnionType::of(...array_map($rebase, $type->members)),
+            $type instanceof ListType => new ListType($rebase($type->value), $type->nonEmpty),
+            $type instanceof ArrayType => new ArrayType($rebase($type->key), $rebase($type->value)),
+            $type instanceof ArrayShapeType => new ArrayShapeType(array_map($rebase, $type->items)),
+            default => $type,
+        };
     }
 
     /**
@@ -557,11 +600,10 @@ final class TypeResolver
     private static function docClass(\ReflectionMethod $method): \ReflectionClass
     {
         foreach (self::traitsOf($method->getDeclaringClass()) as $trait) {
-            foreach ($trait->getMethods() as $candidate) {
-                if ($candidate->getFileName() === $method->getFileName()
-                    && $candidate->getStartLine() === $method->getStartLine()) {
-                    return $trait;
-                }
+            if ($trait->getFileName() === $method->getFileName()
+                && $trait->getStartLine() <= $method->getStartLine()
+                && $method->getStartLine() <= $trait->getEndLine()) {
+                return $trait;
             }
         }
 

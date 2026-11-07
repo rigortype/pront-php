@@ -79,8 +79,8 @@ final class Subtype
     /**
      * The native `iterable` and `object` are outside the Stage 1 list, but whether a Stage 1 type
      * narrows them is still decidable: every array-like type is iterable, a class-like type is
-     * iterable when it is `Traversable` (maybe, when a subclass could be), every class-like type
-     * is an object. (`$super` is always a native type here, so its written name is the keyword.)
+     * iterable when it is `Traversable` (maybe, for an interface), every class-like type is an
+     * object. (`$super` is always a native type here, so its written name is the keyword.)
      */
     private static function intoNativeOutsideList(Type $sub, UncheckedType $super): Certainty
     {
@@ -88,24 +88,14 @@ final class Subtype
 
         return match (true) {
             $super->written === 'iterable' && self::isArrayLike($sub) => Certainty::Yes,
-            $super->written === 'iterable' && $class !== null => self::classInto($class, \Traversable::class),
+            // As PHPStan: Maybe only for an interface, which a Traversable class may implement.
+            $super->written === 'iterable' && $class !== null => is_a($class, \Traversable::class, true)
+                ? Certainty::Yes
+                : ((new \ReflectionClass($class))->isInterface() ? Certainty::Maybe : Certainty::No),
             $super->written === 'object' && $class !== null => Certainty::Yes,
             $super->written === 'iterable', $super->written === 'object' => Certainty::No,
             default => Certainty::Maybe,
         };
-    }
-
-    /**
-     * Whether every instance of `$class` (or of a subclass) is an instance of `$super`: Yes when it
-     * is a subclass, No when it is final (or an enum) and is not, Maybe otherwise.
-     */
-    private static function classInto(string $class, string $super): Certainty
-    {
-        if (is_a($class, $super, true)) {
-            return Certainty::Yes;
-        }
-
-        return (new \ReflectionClass($class))->isFinal() ? Certainty::No : Certainty::Maybe;
     }
 
     public static function isArrayLike(Type $type): bool

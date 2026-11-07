@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Pront\Type;
 
 /**
- * Whether two types share no value: the relation PHPStan uses to keep a native union member next
- * to a narrowing PHPDoc type (`TypehintHelper::decideType` keeps a member whose
- * `isSuperTypeOf(phpDoc)` is No). `Maybe` when a fragment outside the Stage 1 list makes it
- * undecidable.
+ * Whether a native union member is kept next to a narrowing PHPDoc type: PHPStan's
+ * `TypehintHelper::decideType` keeps a member whose `isSuperTypeOf(phpDoc)` is No, which is
+ * disjointness except that `never`, `void` and `mixed` keep nothing. `Maybe` when a fragment
+ * outside the Stage 1 list makes it undecidable.
  */
 final class Disjoint
 {
@@ -20,10 +20,9 @@ final class Disjoint
             }
         }
         foreach ([[$a, $b], [$b, $a]] as [$x, $y]) {
-            if ($x instanceof NeverType || $x instanceof VoidType) {
-                return Certainty::Yes;
-            }
-            if ($x instanceof MixedType) {
+            // `never` and `void` are kept as declared, with no native member beside them: PHPStan
+            // keeps a member only when its isSuperTypeOf(PHPDoc) is No, which is never the case.
+            if ($x instanceof NeverType || $x instanceof VoidType || $x instanceof MixedType) {
                 return Certainty::No;
             }
         }
@@ -63,7 +62,10 @@ final class Disjoint
         return match (true) {
             $native->written === 'object' => Certainty::of($class === null),
             $native->written === 'iterable' && Subtype::isArrayLike($other) => Certainty::No,
-            $native->written === 'iterable' && $class !== null => self::classes($class, \Traversable::class),
+            // PHPStan: a class-like overlaps `iterable` only when it is Traversable or an interface.
+            $native->written === 'iterable' && $class !== null => Certainty::of(
+                !is_a($class, \Traversable::class, true) && !(new \ReflectionClass($class))->isInterface(),
+            ),
             $native->written === 'iterable' => Certainty::Yes,
             default => Certainty::Maybe,
         };
