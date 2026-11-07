@@ -386,16 +386,21 @@ final class EngineTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, int}> method body, attempts
+     * @return iterable<string, array{string, int, ?callable(Target, Input): Outcome}> method body, attempts, property
      */
     public static function inputLifetimes(): iterable
     {
-        yield 'fresh trials' => ['', 3];
-        yield 'a fresh trial, then flaky re-runs' => ['throw new \\DomainException();', 6];
+        yield 'fresh trials' => ['', 3, null];
+        yield 'a fresh trial, then flaky re-runs' => ['throw new \\DomainException();', 6, null];
+        // The Rejected's trace holds the input; it must not outlive the attempt.
+        yield 'discards' => ['', 31, static fn(Target $t, Input $in): Outcome => throw new Rejected('never')];
     }
 
+    /**
+     * @param ?callable(Target, Input): Outcome $property
+     */
     #[DataProvider('inputLifetimes')]
-    public function testEachInputIsBuiltAfterItsBeginAndDestroyedBeforeItsEnd(string $body, int $attempts): void
+    public function testEachInputIsBuiltAfterItsBeginAndDestroyedBeforeItsEnd(string $body, int $attempts, ?callable $property): void
     {
         [$project, $discovery] = Harness::discover(['src/A.php' => Harness::php(
             'final class A {
@@ -413,7 +418,7 @@ final class EngineTest extends TestCase
             $events[] = [$event, $types['begin'], $types['end']];
         };
 
-        (new Engine($journal, Harness::call(...)))->verify($discovery->targets[0], self::RUN_SEED);
+        (new Engine($journal, $property ?? Harness::call(...)))->verify($discovery->targets[0], self::RUN_SEED);
         $class::$probe = null;
 
         $expected = [];
@@ -425,12 +430,41 @@ final class EngineTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string, string}> method body, signature site
+     */
+    public static function destructorFailures(): iterable
+    {
+        yield 'a passing trial' => ['', 'DomainException'];
+        yield 'a failing trial keeps its own failure' => ['throw new \\RangeException();', 'RangeException'];
+    }
+
+    #[DataProvider('destructorFailures')]
+    public function testAThrowingDestructorOfTheInputFailsTheAttempt(string $body, string $exception): void
+    {
+        [$engine, $discovery, $journal] = $this->engine(['src/A.php' => Harness::php(
+            'final class A {
+                public function __destruct() { throw new \\DomainException("dtor"); }
+                #[Verify] public function m(): void { ' . $body . ' }
+            }',
+        )]);
+
+        $report = $engine->verify($discovery->targets[0], self::RUN_SEED);
+
+        self::assertSame(TargetStatus::Failed, $report->status);
+        self::assertSame(1, $report->trials);
+        self::assertStringStartsWith($exception . '@', (string) $report->counterexample?->failure->signature);
+        self::assertSame(5, $report->counterexample->reproduced, 'the release fails the same way on every path');
+        self::assertSame(['fresh' => 1, 'flaky' => 5], self::attemptCounts($journal));
+    }
+
+    /**
      * @return iterable<string, array{mixed}>
      */
     public static function badSends(): iterable
     {
         yield 'nothing (foreach)' => [null];
         yield 'an invalid outcome' => [Outcome::invalid()];
+        yield 'a Rejected' => [new Rejected('no')];
     }
 
     #[DataProvider('badSends')]
@@ -517,7 +551,7 @@ final class EngineTest extends TestCase
         for ($trial = $trials->current(); $trial !== null; $trial = $trials->current()) {
             self::assertInstanceOf(Trial::class, $trial);
             $yielded[] = [$trials->key(), $trial->seed, $trial->input()->receiver];
-            $sent = $trial->k === 1 ? new Rejected('first') : Outcome::passed();
+            $sent = $trial->k === 1 ? Outcome::discarded('first') : Outcome::passed();
             $trial = null;
             $trials->send($sent);
         }

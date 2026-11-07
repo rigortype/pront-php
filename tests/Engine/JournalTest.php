@@ -37,6 +37,7 @@ final class JournalTest extends TestCase
         $tokens = [];
         Journal::start($directory, static function (RecoveredAttempt $attempt) use (&$tokens): void {
             $tokens[] = $attempt->token;
+            self::assertStringEndsWith("Replay token: {$attempt->token}", $attempt->message());
         })->finish();
 
         return $tokens;
@@ -112,7 +113,7 @@ final class JournalTest extends TestCase
         yield 'every attempt ended, no done' => [[self::begin(1, 1), '{"type":"end","n":1,"outcome":"passed"}'], [], false];
         yield 'done' => [[self::begin(1, 1), '{"type":"end","n":1,"outcome":"passed"}', '{"type":"done"}'], [], false];
         yield 'fatal, already reported by its own run' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"m"}', '{"type":"reported","by":"x"}'], [], false];
-        yield 'fatal whose own report did not finish' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"m"}'], [], true];
+        yield 'fatal whose own report did not finish' => [[self::begin(1, 1), '{"type":"fatal","n":1,"message":"m"}'], [1], true];
         yield 'reported by an earlier recovery' => [[self::begin(1, 1), '{"type":"reported","by":"x"}'], [], false];
         yield 'no attempt' => [[], [], false];
     }
@@ -126,7 +127,8 @@ final class JournalTest extends TestCase
     {
         $project = new Project([]);
         $file = self::runs($project->directory) . '/earlier.jsonl';
-        $content = implode("\n", $lines) . ($lines === [] ? '' : "\n");
+        // A file ends in a newline unless its last record was cut short.
+        $content = implode("\n", $lines) . ($lines === [] || json_decode((string) end($lines)) === null ? '' : "\n");
         file_put_contents($file, $content);
 
         self::assertSame(array_map(self::token(...), $ks), self::recover($project->directory));
@@ -135,7 +137,8 @@ final class JournalTest extends TestCase
         $after = (string) file_get_contents($file);
         if ($marked) {
             self::assertStringStartsWith($content, $after);
-            $last = json_decode(substr($after, strlen($content)), true);
+            $appended = explode("\n", rtrim($after, "\n"));
+            $last = json_decode((string) end($appended), true);
             self::assertIsArray($last);
             self::assertSame('reported', $last['type']);
         } else {

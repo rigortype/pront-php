@@ -19,9 +19,13 @@ namespace Pront\Shrinker;
  */
 final readonly class Outcome
 {
+    /**
+     * @param ?string $reason why the input was discarded, for `OutcomeKind::Discarded`
+     */
     private function __construct(
         public OutcomeKind $kind,
         public ?string $signature,
+        public ?string $reason = null,
     ) {
     }
 
@@ -30,9 +34,12 @@ final readonly class Outcome
         return new self(OutcomeKind::Passed, null);
     }
 
-    public static function discarded(): self
+    /**
+     * @param ?string $reason why the input was discarded (a `Rejected` message), counted per reason
+     */
+    public static function discarded(?string $reason = null): self
     {
-        return new self(OutcomeKind::Discarded, null);
+        return new self(OutcomeKind::Discarded, null, $reason);
     }
 
     /**

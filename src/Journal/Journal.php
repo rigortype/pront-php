@@ -27,9 +27,11 @@ use Pront\Shrinker\Outcome;
  * `start()` creates the file under a hidden temporary name, locks it and only then renames it into
  * place, so another run never sees it unlocked. It then scans every other run file whose lock it
  * can take without waiting (a file whose lock is held belongs to a live run and is left alone): an
- * attempt with a `begin` but no `end` or `fatal` in a file that is neither `done` nor `reported` is
- * handed to the recovery callback and the file is marked `reported`, while its lock is held, so two
- * runs starting together never both report it. Then the scanned files are rotated: the newest
+ * attempt with a `begin` but no `end` in a file that is neither `done` nor `reported` is handed to
+ * the recovery callback and the file is marked `reported`, while its lock is held, so two runs
+ * starting together never both report it. An attempt with a `fatal` record is in such a file only
+ * when its own run's report did not finish (it writes `reported` after STDERR), so it is reported
+ * again, with the fatal message, rather than risk a token nobody saw. Then the scanned files are rotated: the newest
  * `KEEP` (by modification time before this scan, then by name) are kept, and of the others only
  * files that are `done`, `reported`, or hold no attempt are deleted.
  */
@@ -172,20 +174,27 @@ final class Journal
             ? "{$error['message']} in {$error['file']}:{$error['line']}"
             : 'the process ended without a fatal error (exit, die or a shutdown function in the code under test is undefined behaviour, ADR-0004 item 7)';
         $attempt = $this->inFlight;
-        $this->write(['type' => 'fatal', 'n' => $attempt['n'], 'message' => $message]);
-        $stderr = fopen('php://stderr', 'w');
-        if ($stderr !== false) {
-            fwrite($stderr, sprintf(
-                "Pront: the run stopped during a %s attempt of %s: %s\nReplay token: %s\n",
-                $attempt['kind'],
-                $attempt['target'],
-                $message,
-                $attempt['token'],
-            ));
-            fflush($stderr);
+        try {
+            $this->write(['type' => 'fatal', 'n' => $attempt['n'], 'message' => $message]);
+        } finally {
+            // Whatever the journal could record, the token reaches STDERR and the status is 1.
+            $stderr = fopen('php://stderr', 'w');
+            if ($stderr !== false) {
+                fwrite($stderr, sprintf(
+                    "Pront: the run stopped during a %s attempt of %s: %s\nReplay token: %s\n",
+                    $attempt['kind'],
+                    $attempt['target'],
+                    $message,
+                    $attempt['token'],
+                ));
+                fflush($stderr);
+            }
+            try {
+                $this->write(['type' => 'reported', 'by' => $this->runId]);
+            } finally {
+                exit(1);
+            }
         }
-        $this->write(['type' => 'reported', 'by' => $this->runId]);
-        exit(1);
     }
 
     /**
@@ -244,11 +253,13 @@ final class Journal
     {
         $done = false;
         $reported = false;
-        /** @var array<int, array<string, mixed>> $open begin records without end or fatal */
+        /** @var array<int, array<string, mixed>> $open begin records without end */
         $open = [];
-        $hadFatal = false;
+        /** @var array<int, string> $fatal attempt => message of its fatal record */
+        $fatal = [];
         $attempts = 0;
-        foreach (explode("\n", (string) stream_get_contents($handle, null, 0)) as $line) {
+        $content = (string) stream_get_contents($handle, null, 0);
+        foreach (explode("\n", $content) as $line) {
             $record = json_decode($line, true);
             if (!is_array($record) || !is_string($record['type'] ?? null)) {
                 continue; // a line cut short by a crash, or not a record
@@ -265,8 +276,9 @@ final class Journal
                     unset($open[$n]);
                     break;
                 case 'fatal':
-                    unset($open[$n]);
-                    $hadFatal = true;
+                    if (is_int($n)) {
+                        $fatal[$n] = is_string($record['message'] ?? null) ? $record['message'] : '';
+                    }
                     break;
                 case 'reported':
                     $reported = true;
@@ -279,20 +291,24 @@ final class Journal
         if ($done || $reported) {
             return true;
         }
-        if ($open === [] && !$hadFatal) {
+        if ($open === []) {
             return $attempts === 0;
         }
         $runId = basename($path, '.jsonl');
-        foreach ($open as $begin) {
+        foreach ($open as $n => $begin) {
             $onRecovered(new RecoveredAttempt(
                 $runId,
                 is_string($begin['attempt'] ?? null) ? $begin['attempt'] : '?',
                 is_string($begin['target'] ?? null) ? $begin['target'] : '?',
                 is_int($begin['k'] ?? null) ? $begin['k'] : 0,
                 is_string($begin['token'] ?? null) ? $begin['token'] : '?',
+                $fatal[$n] ?? null,
             ));
         }
         fseek($handle, 0, SEEK_END);
+        if ($content !== '' && !str_ends_with($content, "\n")) {
+            fwrite($handle, "\n"); // end the record a crash cut short, so the next one parses
+        }
         self::append($handle, ['type' => 'reported', 'by' => $this->runId]);
 
         return true;

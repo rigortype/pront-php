@@ -28,7 +28,7 @@ use Pront\Shrinker\Shrinker;
  * (the oracles fill it). A `Rejected` it throws is a discard; any other throwable it lets escape
  * is a failure classified by `Outcome::fromThrowable()`. Generating the input follows the same
  * rule: `Rejected` is a discard, any other throwable from user code reached while generating (a
- * constructor) is a failure. Both are classified with the engine's own frames above the call
+ * constructor) is a failure; so is a throwable from releasing the input (a destructor). Both are classified with the engine's own frames above the call
  * dropped, so a fresh trial and a shrink candidate that fail the same way have the same signature.
  *
  * Code under test that ends the process (`exit`, `die`), registers its own shutdown functions or
@@ -95,7 +95,7 @@ final class Engine
         $trials = $this->trials($target, $seed);
         $trial = $trials->current();
         while ($trial !== null) {
-            $outcome = $this->evaluate($target, $trial);
+            $outcome = $this->runProperty($target, $trial->input());
             $trial = null;
             $trials->send($outcome);
             $trial = $trials->current();
@@ -127,16 +127,18 @@ final class Engine
     /**
      * The trial iterator (ADR-0004 item 1): yields fresh trial `k` (from 1) of `$target`, generated
      * from its own stream `Prng::forTrial($seed, k)`, until `iterations` trials passed. The caller
-     * runs each trial and sends back its `Outcome` with `Generator::send()`, or the `Rejected` the
-     * property threw for a discard; it must not keep the trial's input (see `Trial`).
+     * runs each trial and sends back its `Outcome` with `Generator::send()` (a discard as
+     * `Outcome::discarded()` with the rejection's message, never the `Rejected` itself: its stack
+     * trace holds the input); it must not keep the trial's input (see `Trial`).
      *
      * Each fresh trial is one attempt: `begin` is written before its input is generated, `end` after
-     * the outcome was sent and the input released. A discard (while generating, or sent back)
+     * the outcome was sent and the input released; a throwable from releasing the input (a
+     * destructor) fails the trial unless it already failed. A discard (while generating, or sent back)
      * counts toward `k` but not toward the iterations; exceeding the discard threshold stops the
      * iterator with `TrialsStatus::TooManyDiscards`. A failure stops it with `TrialsStatus::Failed`;
      * a failure while generating is not yielded. The return value is the `TrialsResult`.
      *
-     * @return \Generator<int, Trial, Outcome|Rejected, TrialsResult>
+     * @return \Generator<int, Trial, Outcome, TrialsResult>
      */
     public function trials(Target $target, int $seed): \Generator
     {
@@ -146,7 +148,6 @@ final class Engine
         for ($k = 1; $passed < $target->verify->iterations; $k++) {
             $buffer = ChoiceBuffer::fresh(Prng::forTrial($seed, $k));
             $outcome = null;
-            $rejection = null;
             $n = $this->journal->begin(AttemptKind::Fresh, $name, $seed, $k, null);
             try {
                 $input = $this->generateInput($target, $buffer);
@@ -156,20 +157,14 @@ final class Engine
                     $trial = new Trial($name, $seed, $k, $input, $buffer->consumed());
                     unset($input);
                     $sent = yield $k => $trial;
-                    $trial->release();
-                    unset($trial);
-                    if ($sent instanceof Rejected) {
-                        $rejection = $sent;
-                        $outcome = Outcome::discarded();
-                    } elseif ($sent instanceof Outcome && $sent->kind !== OutcomeKind::Invalid) {
-                        $outcome = $sent;
-                    } else {
-                        throw new \LogicException('Send the trial\'s Outcome (passed, discarded or failed) or the Rejected to the trial iterator');
+                    $valid = $sent instanceof Outcome && $sent->kind !== OutcomeKind::Invalid;
+                    $released = $this->releaseInput($trial, $valid ? $sent : Outcome::passed());
+                    unset($trial, $sent);
+                    if (!$valid) {
+                        throw new \LogicException('Send the trial\'s Outcome (passed, discarded or failed) to the trial iterator');
                     }
+                    $outcome = $released;
                 }
-            } catch (Rejected $rejected) {
-                $rejection = $rejected;
-                $outcome = Outcome::discarded();
             } finally {
                 $this->journal->end($n, $outcome);
             }
@@ -178,7 +173,7 @@ final class Engine
                 $passed++;
             } elseif ($outcome->kind === OutcomeKind::Discarded) {
                 try {
-                    $discards->record($rejection ?? new Rejected('the property discarded the input'));
+                    $discards->record(new Rejected($outcome->reason ?? 'the property discarded the input'));
                 } catch (TooManyDiscards $tooMany) {
                     return new TrialsResult(TrialsStatus::TooManyDiscards, $k, $passed, $discards->count(), message: $tooMany->getMessage());
                 }
@@ -214,6 +209,7 @@ final class Engine
             : ChoiceBuffer::repairing($token->buffer);
         $outcome = $this->recorded(AttemptKind::Replay, $target, $token->seed, $token->k, $token->buffer, $buffer);
 
+
         return new ReplayResult($token, $outcome, $outcome->kind === OutcomeKind::Failed ? null : self::REPLAY_LIMITS);
     }
 
@@ -247,7 +243,7 @@ final class Engine
             }
         };
         $shrinker = new Shrinker($this->maxShrinkEvaluations, $this->maxShrinkSeconds, $observer, $this->clock);
-        $shrink = $shrinker->shrink($failing, $failure, fn(ChoiceBuffer $buffer): Outcome => $this->attempt($target, $buffer));
+        $shrink = $shrinker->shrink($failing, $failure, fn(ChoiceBuffer $buffer): Outcome => $this->attempt($target, $seed, $k, $buffer));
 
         $reproduced = 0;
         for ($run = 0; $run < $this->flakyRuns; $run++) {
@@ -269,7 +265,9 @@ final class Engine
     }
 
     /**
-     * One journaled attempt that is not a fresh trial of the iterator.
+     * One journaled attempt that is not a fresh trial of the iterator. An `InvalidChoice` makes a
+     * recorded buffer an invalid candidate; on a fresh buffer (`$recording` null) it is a Pront bug
+     * and propagates, as in the trial iterator.
      *
      * @param list<Draw>|null $recording the buffer the attempt runs, null to regenerate from (seed, k)
      */
@@ -278,10 +276,11 @@ final class Engine
         $outcome = null;
         $n = $this->journal->begin($kind, $target->name(), $seed, $k, $recording);
         try {
-            $outcome = $this->attempt($target, $buffer);
-        } catch (Rejected) {
-            $outcome = Outcome::discarded();
-        } catch (InvalidChoice) {
+            $outcome = $this->attempt($target, $seed, $k, $buffer);
+        } catch (InvalidChoice $invalid) {
+            if ($recording === null) {
+                throw $invalid;
+            }
             $outcome = Outcome::invalid();
         } finally {
             $this->journal->end($n, $outcome);
@@ -291,33 +290,42 @@ final class Engine
     }
 
     /**
-     * Generates the input from `$buffer` and runs the property on it; the input is released when
-     * this returns. `Rejected` and `InvalidChoice` propagate (the shrinker classifies them).
+     * Generates the input from `$buffer`, runs the property on it and releases the input, the way
+     * the trial iterator does. `InvalidChoice` propagates (the shrinker classifies it).
      */
-    private function attempt(Target $target, ChoiceBuffer $buffer): Outcome
+    private function attempt(Target $target, int $seed, int $k, ChoiceBuffer $buffer): Outcome
     {
         $input = $this->generateInput($target, $buffer);
+        if ($input instanceof Outcome) {
+            return $input;
+        }
+        $trial = new Trial($target->name(), $seed, $k, $input, $buffer->consumed());
+        unset($input);
 
-        return $input instanceof Outcome ? $input : $this->runProperty($target, $input);
+        return $this->releaseInput($trial, $this->runProperty($target, $trial->input()));
     }
 
     /**
-     * @return Outcome|Rejected the property's outcome, or its rejection (a discard)
+     * Releases the trial's input. A throwable from user code run by the release (a destructor)
+     * fails the attempt, unless it already failed with its own signature.
      */
-    private function evaluate(Target $target, Trial $trial): Outcome|Rejected
+    private function releaseInput(Trial $trial, Outcome $outcome): Outcome
     {
         try {
-            return $this->runProperty($target, $trial->input());
-        } catch (Rejected $rejected) {
-            return $rejected;
+            $trial->release();
+        } catch (\Throwable $failure) {
+            return $outcome->kind === OutcomeKind::Failed ? $outcome : Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
+
+        return $outcome;
     }
 
     /**
-     * The receiver first (an instance method), then the parameters in declaration order; a failure
-     * of user code reached while generating is returned as the failing `Outcome`.
+     * The receiver first (an instance method), then the parameters in declaration order. A
+     * `Rejected` is returned as a discard with its message (the exception itself is dropped here:
+     * its trace may hold generated values); a failure of user code reached while generating is
+     * returned as the failing `Outcome`.
      *
-     * @throws Rejected
      * @throws InvalidChoice
      */
     private function generateInput(Target $target, ChoiceBuffer $buffer): Input|Outcome
@@ -325,8 +333,10 @@ final class Engine
         try {
             $receiver = $target->receiver?->generate($buffer);
             $arguments = $target->arguments->generate($buffer);
-        } catch (Rejected | InvalidChoice $expected) {
-            throw $expected;
+        } catch (InvalidChoice $invalid) {
+            throw $invalid;
+        } catch (Rejected $rejected) {
+            return Outcome::discarded($rejected->getMessage());
         } catch (\Throwable $failure) {
             return Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
@@ -338,14 +348,15 @@ final class Engine
     }
 
     /**
-     * @throws Rejected
+     * Runs the property. A `Rejected` it throws is returned as a discard with its message, and the
+     * exception is dropped here, before the input is released: its trace holds the input.
      */
     private function runProperty(Target $target, Input $input): Outcome
     {
         try {
             return ($this->property)($target, $input);
         } catch (Rejected $rejected) {
-            throw $rejected;
+            return Outcome::discarded($rejected->getMessage());
         } catch (\Throwable $failure) {
             return Outcome::fromThrowable($failure, self::outerFrames($failure));
         }
@@ -353,7 +364,7 @@ final class Engine
 
     /**
      * The number of outermost stack frames of `$failure` that lie above the engine's call into user
-     * code (`generateInput()` or `runProperty()`): they differ between a fresh trial and a shrink
+     * code (`generateInput()`, `runProperty()` or `releaseInput()`): they differ between a fresh trial and a shrink
      * candidate, so they are not part of the failure signature.
      *
      * @return int<0, max>
@@ -362,7 +373,7 @@ final class Engine
     {
         $trace = $failure->getTrace();
         foreach ($trace as $index => $frame) {
-            if (($frame['class'] ?? null) === self::class && in_array($frame['function'], ['generateInput', 'runProperty'], true)) {
+            if (($frame['class'] ?? null) === self::class && in_array($frame['function'], ['generateInput', 'runProperty', 'releaseInput'], true)) {
                 return count($trace) - $index;
             }
         }
