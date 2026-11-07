@@ -1,6 +1,6 @@
 # ADR-0013: Tooling
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 (scope principles)
 

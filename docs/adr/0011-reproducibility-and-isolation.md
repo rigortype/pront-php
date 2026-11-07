@@ -1,6 +1,6 @@
 # ADR-0011: Reproducibility and Execution Isolation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 (Pillars 2, 7; scope principles)
 

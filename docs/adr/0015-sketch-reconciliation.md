@@ -1,6 +1,6 @@
 # ADR-0015: Reconciliation with the Original Sketch
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 to ADR-0014 (`docs/sketch.md` is the original hand-off draft)
 

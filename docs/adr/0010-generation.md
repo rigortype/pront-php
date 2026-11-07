@@ -1,6 +1,6 @@
 # ADR-0010: Generation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 (Pillars 1, 4)
 

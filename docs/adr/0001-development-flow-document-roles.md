@@ -1,6 +1,6 @@
 # ADR-0001: Development-flow document roles
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: none (a process decision); modelled on Rigor ADR-98 (`rigortype/rigor`)
 

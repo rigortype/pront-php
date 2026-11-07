@@ -1,6 +1,6 @@
 # ADR-0008: Project Concept
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Project: Pront (`pront-php`)
 
