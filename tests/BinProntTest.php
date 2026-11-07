@@ -6,6 +6,8 @@ namespace Pront\Tests;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Pront\ChoiceBuffer\Draw;
+use Pront\ChoiceBuffer\DrawKind;
 use Pront\Engine\Engine;
 use Pront\Engine\ReplayToken;
 use Pront\Tests\Discovery\Project;
@@ -233,29 +235,36 @@ final class BinProntTest extends TestCase
     public static function changedTargets(): iterable
     {
         $failing = 'public function __construct(int $base) {} #[Verify] public function m(int $x): void { throw new \Error(); }';
+        $readMore = 'The replay read 6 draws of the 4 recorded: the token is a shrink candidate or a stopped attempt, or the parameters of the target changed';
         yield 'a parameter was added' => [
             $failing,
             str_replace('int $x)', 'int $x, int $y)', $failing),
             1,
-            ["  Input:\n    \$self = new \\A(base: 0)\n    \$x = 0\n    \$y = 0\n", 'no longer fits A::m', 'FAIL A::m: the replay failed', '0 passed, 1 failed'],
+            ["  Input:\n    \$self = new \\A(base: 0)\n    \$x = 0\n    \$y = 0\nFAIL A::m: the replay failed", '0 passed, 1 failed'],
         ];
         yield 'a parameter was added and the bug fixed' => [
             $failing,
             'public function __construct(int $base) {} #[Verify] public function m(int $x, int $y): void {}',
-            2,
-            ['no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '0 passed, 0 failed', '1 replay error'],
+            0,
+            ['PASS A::m: no longer reproduces', Engine::REPLAY_LIMITS, $readMore, '1 passed, 0 failed', '0 replay errors'],
         ];
         yield 'a parameter changed its type' => [
             $failing,
             'public function __construct(int $base) {} #[Verify] public function m(bool $x): void {}',
             2,
-            ['no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '1 replay error'],
+            ['The recorded draws no longer match the parameters of A::m', 'ERROR A::m: the replay did not fail, but on another input than the recorded one', '1 replay error'],
         ];
         yield 'a narrowed range repairs the recorded value' => [
             '/** @param int<0, 100> $x */ #[Verify(seed: 1)] public static function m(int $x): void { if ($x > 50) { throw new \Error(); } }',
             '/** @param int<0, 10> $x */ #[Verify(seed: 1)] public static function m(int $x): void {}',
-            2,
-            ["    \$x = 10\n", 'no longer fits A::m', 'ERROR A::m: the recorded buffer no longer produces an input for it', '1 replay error'],
+            0,
+            ["    \$x = 10\n", 'PASS A::m: no longer reproduces', 'The replay read 2 draws of the 2 recorded, repairing some:'],
+        ];
+        yield 'a fixed constructor, recorded before the parameters were drawn' => [
+            'public function __construct(int $base) { intdiv($base, 0); } #[Verify] public function m(int $x): void {}',
+            'public function __construct(int $base) {} #[Verify] public function m(int $x): void {}',
+            0,
+            ["    \$self = new \\A(base: 0)\n    (the attempt stopped while building \$self: the parameters below were not drawn)\n    \$x = 0\n", 'PASS A::m: no longer reproduces', 'The replay read 4 draws of the 2 recorded:'],
         ];
         yield 'the input is now discarded' => [
             $failing,
@@ -280,8 +289,30 @@ final class BinProntTest extends TestCase
         [$code, $replay] = self::pront($project, ['--replay', $token]);
         $replay = $project->relative($replay);
         self::assertContainsInOrder($expected, $replay);
-        self::assertStringNotContainsString('not drawn', $replay);
+        if (!str_contains(implode("\n", $expected), 'not drawn')) {
+            self::assertStringNotContainsString('not drawn', $replay);
+        }
         self::assertSame($exitCode, $code, $replay);
+    }
+
+    /**
+     * A crashed shrink candidate is an edited buffer: here one draw longer than the input reads.
+     * Replaying it on the unchanged target passes with a caveat, not a replay error.
+     */
+    public function testReplayOfAShrinkCandidateTokenOnAnUnchangedTarget(): void
+    {
+        $project = self::project('/** @param int<0, 100> $x */ #[Verify] public static function m(int $x): void {}');
+        $token = new ReplayToken($project->namespace . '\\A::m', 1, 1, [
+            new Draw(DrawKind::Selector, [0]),
+            new Draw(DrawKind::Int, [5, 0]),
+            new Draw(DrawKind::Int, [1, 0]),
+        ]);
+
+        [$code, $replay] = self::pront($project, ['--replay', $token->toString()]);
+        $replay = $project->relative($replay);
+        self::assertSame(0, $code, $replay);
+        self::assertContainsInOrder(['PASS A::m: no longer reproduces', 'The replay read 2 draws of the 3 recorded:', '0 replay errors'], $replay);
+        self::assertStringNotContainsString('no longer match', $replay);
     }
 
     public function testTheReplayCommandQuotesTheConfigPath(): void
@@ -303,11 +334,48 @@ final class BinProntTest extends TestCase
         self::assertStringContainsString(': the replay failed', $replay);
     }
 
-    public function testARunEndsItsJournal(): void
+    /**
+     * @return iterable<string, array{string, list<string>}>
+     */
+    public static function journalEnds(): iterable
     {
-        $project = self::project('#[Verify(iterations: 1)] public static function m(): int { return 1; }');
-        self::pront($project, []);
+        $body = '#[Verify(iterations: 1)] public static function m(): int { return 1; }';
+        yield 'a run' => [$body, []];
+        yield 'a replay' => [$body, ['--replay', (new ReplayToken('{NS}\\A::m', 1, 1, null))->toString()]];
+        yield 'a replay of a target that is not verified' => [$body, ['--replay', (new ReplayToken('Nope::m', 1, 1, null))->toString()]];
+        yield 'nothing to verify' => ['public static function m(): void {}', []];
+    }
 
+    /**
+     * @param list<string> $arguments `{NS}` stands for the project's namespace
+     */
+    #[DataProvider('journalEnds')]
+    public function testARunEndsItsJournal(string $body, array $arguments): void
+    {
+        $project = self::project($body);
+        $arguments = array_map(static function (string $a) use ($project): string {
+            if (!str_starts_with($a, ReplayToken::PREFIX) || !str_contains(ReplayToken::parse($a)->target, '{NS}')) {
+                return $a;
+            }
+            $token = ReplayToken::parse($a);
+
+            return (new ReplayToken(str_replace('{NS}', $project->namespace, $token->target), $token->seed, $token->k, null))->toString();
+        }, $arguments);
+        self::pront($project, $arguments);
+
+        self::assertJournalDone($project);
+    }
+
+    public function testAConfigurationErrorEndsItsJournal(): void
+    {
+        $project = new Project(['pront.php' => "<?php\nreturn [];\n"]);
+        self::assertSame(2, self::pront($project, [])[0]);
+
+        self::assertJournalDone($project);
+    }
+
+    private static function assertJournalDone(Project $project): void
+    {
         $files = glob($project->directory . '/.pront/runs/*.jsonl') ?: [];
         self::assertCount(1, $files);
         $records = \Pront\Tests\Engine\Harness::records($files[0]);
@@ -391,6 +459,9 @@ final class BinProntTest extends TestCase
         ), $stdout);
         $token = ReplayToken::parse($match[1]);
         self::assertSame([1, null], [$token->k, $token->buffer]);
+        [$code, $replay] = self::pront($project, ['--replay', $match[1]]);
+        self::assertSame(0, $code, $replay);
+        self::assertStringContainsString('  The input was regenerated from the seed: if the parameters of the target changed', $replay);
 
         self::assertStringContainsString('; 1 crashed attempt of earlier runs', $stdout);
 

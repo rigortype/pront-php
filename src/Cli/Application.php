@@ -43,9 +43,10 @@ use Pront\Version;
  * many discards, and with `--strict` also for an unchecked fragment, a reserved-name conflict, a
  * skipped implementation or a class "unverified until Stage 3"; otherwise 0.
  *
- * A replay prints the input it runs first. A recorded buffer that no longer replays as recorded
- * (repaired, or with other draw kinds: the target's parameters changed) never reports "no longer
- * reproduces": a pass is then a replay error (exit 2). Unfinished attempts of earlier runs are
+ * A replay prints the input it runs first. When a recorded draw is read as another kind (the
+ * target's parameters changed), a pass is a replay error (exit 2), never "no longer reproduces";
+ * when the replay cannot tell (another draw count, a repair, a token regenerated from the seed), a
+ * pass carries a caveat (see `fit()`). Unfinished attempts of earlier runs are
  * counted on the summary line, which is all that changes for them.
  *
  * The report goes to `$out`; a usage error and an internal error go to `$err`. A fatal error
@@ -188,14 +189,9 @@ final class Application
             : ChoiceBuffer::repairing($token->buffer);
         $this->line('  Input:');
         $this->input($target, $buffer, $token->buffer);
-        // A recorded buffer that was repaired, or not read draw for draw with the recorded kinds, no
-        // longer describes the recorded input (the target's parameters changed): a pass then proves
-        // nothing.
-        $kinds = static fn(array $draws): array => array_map(static fn(Draw $draw): string => $draw->kind->name, $draws);
-        $fits = $token->buffer === null
-            || (!$buffer->repaired() && $kinds($buffer->consumed()) === $kinds($token->buffer));
+        [$fits, $caveat] = self::fit($token, $buffer);
         if (!$fits) {
-            $this->line("  The recorded buffer no longer fits {$token->target} (it was repaired, or its draws do not match the parameters): the input above is not the recorded one.");
+            $this->line("  The recorded draws no longer match the parameters of {$token->target} (a draw of another kind is read where one was recorded): the target changed, and the input above is not the recorded one.");
         }
 
         $result = $engine->replay($token, $discovery);
@@ -206,14 +202,20 @@ final class Application
             $this->line(($unverifiable ? 'UNVERIFIABLE' : 'FAIL') . " {$token->target}: the replay failed");
             $this->line("  Failure: {$outcome->signature}");
             $tally->replayed($unverifiable ? 'unverifiable' : 'failed');
-        } elseif ($outcome->kind === OutcomeKind::Invalid || !$fits) {
+        } elseif ($outcome->kind === OutcomeKind::Invalid) {
             $this->line("ERROR {$token->target}: the recorded buffer no longer produces an input for it (did its parameter types change?)");
+            $tally->replayError();
+        } elseif (!$fits) {
+            $this->line("ERROR {$token->target}: the replay did not fail, but on another input than the recorded one; whether the failure still reproduces is unknown");
             $tally->replayError();
         } else {
             $this->line("PASS {$token->target}: no longer reproduces"
                 . ($outcome->kind === OutcomeKind::Discarded ? ' (the input was discarded: ' . ($outcome->reason ?? 'no reason given') . ')' : ''));
             if ($result->note !== null) {
                 $this->line("  {$result->note}");
+            }
+            if ($caveat !== null) {
+                $this->line("  {$caveat}");
             }
             $tally->replayed('passed');
         }
@@ -223,6 +225,42 @@ final class Application
         $this->line($tally->summary());
 
         return $tally->exitCode($this->arguments->strict);
+    }
+
+    /**
+     * Whether the replay read the token's buffer as the input it recorded, after `input()` read
+     * `$buffer`; and the caveat a pass must carry when that cannot be told.
+     *
+     * Only a draw of another kind read at a recorded position proves the target changed. A
+     * difference in length or a repaired slot does not: a counterexample that stopped while
+     * building `$self` recorded no parameter draws, and a crashed shrink candidate is an edited
+     * buffer that may be shorter, longer or need repair (ADR-0002 section 4). A token without a
+     * buffer is regenerated from (seed, k) and recorded no draws at all.
+     *
+     * @return array{bool, ?string}
+     */
+    private static function fit(ReplayToken $token, ChoiceBuffer $buffer): array
+    {
+        if ($token->buffer === null) {
+            return [true, 'The input was regenerated from the seed: if the parameters of the target changed since the token was made, it is not the input of the original attempt.'];
+        }
+        $consumed = $buffer->consumed();
+        $common = min(count($consumed), count($token->buffer));
+        for ($i = 0; $i < $common; $i++) {
+            if ($consumed[$i]->kind !== $token->buffer[$i]->kind) {
+                return [false, null];
+            }
+        }
+        if ($buffer->repaired() || count($consumed) !== count($token->buffer)) {
+            return [true, sprintf(
+                'The replay read %d draws of the %d recorded%s: the token is a shrink candidate or a stopped attempt, or the parameters of the target changed; in the last case it was not the recorded input.',
+                count($consumed),
+                count($token->buffer),
+                $buffer->repaired() ? ', repairing some' : '',
+            )];
+        }
+
+        return [true, null];
     }
 
     /**
