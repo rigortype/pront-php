@@ -93,6 +93,10 @@ final class OracleTest extends TestCase
         $enumReturn = 'enum E { case X; } final class A { /** @return E */ #[Verify] public static function m(int $x): object { return $x === 0 ? E::X : new \stdClass(); } }';
         yield 'enum holds' => [$enumReturn, ['x' => 0], null, null];
         yield 'enum violated' => [$enumReturn, ['x' => 1], FailureKind::ReturnType, 'returned stdClass, declared'];
+        $float = 'final class A { /** @return float */ #[Verify] public static function m(int $x) { return intdiv($x, 1); } }';
+        yield 'float accepts an int' => [$float, ['x' => 3], null, null];
+        yield 'list<float> accepts ints' => ['final class A { /** @return list<float> */ #[Verify] public static function m(int $x): array { return [$x, 1.5]; } }', ['x' => 3], null, null];
+        yield 'float rejects a string' => ['final class A { /** @return float */ #[Verify] public static function m(int $x) { return "1.5"; } }', ['x' => 3], FailureKind::ReturnType, 'returned string, declared float'];
         $nativeMismatch = 'final class A { #[Verify] public static function m(int $x): int { return $x === 0 ? 1 : "a"; } }';
         yield 'native return mismatch is a TypeError, undeclared' => [$nativeMismatch, ['x' => 1], FailureKind::UndeclaredThrowable, 'TypeError@'];
 
@@ -140,7 +144,15 @@ final class OracleTest extends TestCase
             FailureKind::Unverifiable,
             '#[Ensures] 1: TypeError@',
         ];
-        yield 'ensures declared bool returning an int is unverifiable' => [$ensures('static function (int $return): bool { return $return; }'), ['x' => 3], FailureKind::Unverifiable, 'TypeError@'];
+        yield 'ensures declared bool returning an int is not bool' => [$ensures('static function (int $return): bool { return $return; }'), ['x' => 3], FailureKind::EnsuresNotBool, '#[Ensures] 1 returned int'];
+        yield 'ensures declared bool returning null is not bool' => [$ensures('static function (int $return): bool { return null; }'), ['x' => 3], FailureKind::EnsuresNotBool, '#[Ensures] 1 returned null'];
+        yield 'a TypeError from code the ensures calls is a throw' => [$ensures('static function (int $return): bool { return strlen($return) > 0; }'), ['x' => 3], FailureKind::EnsuresThrew, '#[Ensures] 1: TypeError@'];
+        yield 'an argument TypeError of a closure the ensures calls is a throw' => [
+            $ensures('static function (int $return): bool { $f = static fn(string $s): bool => true; return $f($return); }'),
+            ['x' => 3],
+            FailureKind::EnsuresThrew,
+            '#[Ensures] 1: TypeError@',
+        ];
         yield 'ensures is skipped after a return-type failure' => [
             'final class A { /** @return positive-int */ #[Verify] #[\\Pront\\Attribute\\Ensures(static function (): bool { throw new \\LogicException(); })] public static function m(int $x): int { return $x; } }',
             ['x' => 0],
@@ -297,5 +309,29 @@ final class OracleTest extends TestCase
         self::assertNull(FailureKind::of(Outcome::fromThrowable(new \RuntimeException())));
         self::assertNull(FailureKind::of(Outcome::failed('return types: x')));
         self::assertSame(FailureKind::EnsuresNotBool, FailureKind::of(Outcome::failed('ensures not bool: x')));
+    }
+
+    public function testUncheckedExceptionsAreCountedPerTarget(): void
+    {
+        [, $discovery] = self::discover(<<<'PHP'
+            final class A {
+                /** @return positive-int */
+                #[Verify]
+                #[\Pront\Attribute\Ensures(static function (): bool { return false; })]
+                public static function m(int $x): int { if ($x > 0) { throw new \InvalidArgumentException(); } return intdiv(1, 0); }
+                /** @throws \InvalidArgumentException */
+                #[Verify] public static function declared(int $x): int { throw new \InvalidArgumentException(); }
+            }
+            PHP);
+        $oracle = new Oracle();
+        $m = self::target($discovery);
+
+        self::assertSame(OutcomeKind::Passed, $oracle($m, new Input(null, ['x' => 1]))->kind);
+        self::assertSame(OutcomeKind::Passed, $oracle($m, new Input(null, ['x' => 2]))->kind);
+        self::assertSame(FailureKind::UndeclaredThrowable, FailureKind::of($oracle($m, new Input(null, ['x' => 0]))));
+        self::assertSame(OutcomeKind::Passed, $oracle(self::target($discovery, 'declared'), new Input(null, ['x' => 1]))->kind);
+
+        self::assertSame([$m->name() => 2], $oracle->uncheckedExceptions());
+        self::assertSame([], (new Oracle())->uncheckedExceptions());
     }
 }

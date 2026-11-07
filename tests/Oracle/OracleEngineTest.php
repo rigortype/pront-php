@@ -76,6 +76,11 @@ final class OracleEngineTest extends TestCase
                 . ' public static function m(int $x): int|string { return $x >= 100 ? "big" : $x; }',
             FailureKind::Unverifiable,
         ];
+        yield 'an exception created while generating the receiver' => [
+            'private \\RangeException $e; public function __construct() { $this->e = new \\RangeException(); } '
+                . $doc('@throws \\DomainException') . ' #[Verify(seed: 1)] public function m(int $x): void { if ($x >= 100) { throw $this->e; } }',
+            FailureKind::UndeclaredThrowable,
+        ];
         yield 'ensures on an instance method' => [
             'public int $last = 0; ' . $doc() . ' #[Verify(seed: 1)] ' . $ensures('static function (self $self): bool { return $self->last < 100; }')
                 . ' public function m(int $x): void { $this->last = $x; }',

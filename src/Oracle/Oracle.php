@@ -7,6 +7,7 @@ namespace Pront\Oracle;
 use Pront\Discovery\BindingKind;
 use Pront\Discovery\Condition;
 use Pront\Discovery\Target;
+use Pront\Engine\Engine;
 use Pront\Engine\Input;
 use Pront\Shrinker\Outcome;
 use Pront\Type\Certainty;
@@ -18,14 +19,18 @@ use Pront\Type\ThrowsDeclaration;
  * target once with the input and decides the trial:
  *
  * 1. The method is called on the input's receiver (none for a static method) with the input's
- *    arguments as named arguments.
+ *    arguments as named arguments. A condition's parameter binds the generated argument, the value
+ *    before the call.
  * 2. A throwable is checked against `@throws` (ADR-0009 section 5): with a `@throws` tag, any
  *    throwable that is not an instance of a declared class fails (`@throws void` declares none);
  *    without one, an `Error` fails and an `Exception` passes unchecked. A declared throwable passes.
+ *    Neither the return type nor `Ensures` can run without a return value: an unchecked `Exception`
+ *    is counted per target (`uncheckedExceptions()`) so the report can list it, never a silent pass.
  * 3. A returned value is checked against the declared return type (`ReturnTypeCheck`). A fragment
  *    the stage cannot check answers "maybe" and passes; it is listed by `uncheckedFragments()`.
  * 4. Each `#[Ensures]`, in source order, is called with its bound values: it must return true.
- *    False, a non-bool and a throwable fail with distinct kinds; a `TypeError` makes the trial
+ *    False, a non-bool (also when the condition's own return type rejects it) and a throwable fail
+ *    with distinct kinds; a `TypeError` binding a value to a condition parameter makes the trial
  *    unverifiable (ADR-0009 section 4). The first condition that does not hold decides.
  *
  * Same failure: the signature (see `Outcome`) names the failure kind and the target or condition,
@@ -41,6 +46,12 @@ final class Oracle
     /** The methods of this class that call user code; frames above them are not in a signature. */
     private const array CALLERS = ['callTarget', 'callCondition'];
 
+    /** The engine's methods that call user code (a throwable created while generating the input). */
+    private const array ENGINE_CALLERS = ['generateInput', 'runProperty', 'releaseInput'];
+
+    /** @var array<string, int<1, max>> target name => attempts that ended in an unchecked `Exception` */
+    private array $uncheckedExceptions = [];
+
     public function __invoke(Target $target, Input $input): Outcome
     {
         $returned = null;
@@ -50,6 +61,9 @@ final class Oracle
         } catch (\Throwable $thrown) {
         }
         if ($thrown !== null) {
+            if ($target->signature->throws === null && $thrown instanceof \Exception) {
+                $this->uncheckedExceptions[$target->name()] = ($this->uncheckedExceptions[$target->name()] ?? 0) + 1;
+            }
             $outcome = self::allows($target->signature->throws, $thrown)
                 ? Outcome::passed()
                 : FailureKind::UndeclaredThrowable->outcome($target->name() . ': ' . self::signature($thrown));
@@ -78,6 +92,19 @@ final class Oracle
         }
 
         return Outcome::passed();
+    }
+
+    /**
+     * Per target, how many attempts this oracle ran ended in an `Exception` that a method without
+     * `@throws` may throw (ADR-0009 section 5): those attempts passed without a return-type or
+     * `Ensures` check, so a report lists them. Every attempt counts (fresh trials, shrink candidates,
+     * flaky re-runs and replays alike).
+     *
+     * @return array<string, int<1, max>>
+     */
+    public function uncheckedExceptions(): array
+    {
+        return $this->uncheckedExceptions;
     }
 
     /**
@@ -148,8 +175,7 @@ final class Oracle
         } catch (\Throwable $thrown) {
         }
         if ($thrown !== null) {
-            $kind = $thrown instanceof \TypeError ? FailureKind::Unverifiable : FailureKind::EnsuresThrew;
-            $outcome = $kind->outcome($condition->subject . ': ' . self::signature($thrown));
+            $outcome = self::conditionThrew($condition, $thrown);
             $thrown = null;
 
             return $outcome;
@@ -163,6 +189,27 @@ final class Oracle
     }
 
     /**
+     * A `TypeError` the condition raised at its own boundary, called from `callCondition()` (the
+     * innermost frame of the trace): binding a value to a parameter makes the trial unverifiable
+     * (ADR-0009 section 4); the condition's own return type rejecting its result is a non-bool
+     * result. Anything else, including a `TypeError` from code the condition calls, is a throw.
+     */
+    private static function conditionThrew(Condition $condition, \Throwable $thrown): Outcome
+    {
+        $trace = $thrown->getTrace();
+        $boundary = $thrown instanceof \TypeError && !$thrown instanceof \ArgumentCountError
+            && ($trace[1]['class'] ?? null) === self::class && ($trace[1]['function'] ?? null) === 'callCondition';
+        if ($boundary && preg_match('/^.*\(\): Argument #\d+ \(\$\w+\) must be of type /', $thrown->getMessage()) === 1) {
+            return FailureKind::Unverifiable->outcome($condition->subject . ': ' . self::signature($thrown));
+        }
+        if ($boundary && preg_match('/\(\): Return value must be of type .+, (\S+) returned$/', $thrown->getMessage(), $match) === 1) {
+            return FailureKind::EnsuresNotBool->outcome($condition->subject . ' returned ' . $match[1]);
+        }
+
+        return FailureKind::EnsuresThrew->outcome($condition->subject . ': ' . self::signature($thrown));
+    }
+
+    /**
      * @param list<mixed> $values
      */
     private function callCondition(Condition $condition, array $values): mixed
@@ -172,14 +219,18 @@ final class Oracle
 
     /**
      * `Outcome::fromThrowable()`'s signature of `$thrown`, without the frames above this class's
-     * call into user code: they differ between a fresh trial and a shrink candidate.
+     * call into user code: they differ between a fresh trial and a shrink candidate. A throwable
+     * created before the call (while the engine generated the input) has no such frame; the frames
+     * above the engine's call into user code are dropped instead.
      */
     private static function signature(\Throwable $thrown): string
     {
         $trace = $thrown->getTrace();
         $outer = 0;
         foreach ($trace as $index => $frame) {
-            if (($frame['class'] ?? null) === self::class && in_array($frame['function'], self::CALLERS, true)) {
+            $class = $frame['class'] ?? null;
+            if (($class === self::class && in_array($frame['function'], self::CALLERS, true))
+                || ($class === Engine::class && in_array($frame['function'], self::ENGINE_CALLERS, true))) {
                 $outer = count($trace) - $index;
                 break;
             }
