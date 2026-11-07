@@ -78,19 +78,50 @@ final class Subtype
 
     /**
      * The native `iterable` and `object` are outside the Stage 1 list, but whether a Stage 1 type
-     * narrows them is still decidable: every array-like type is iterable, every class-like type
-     * an object.
+     * narrows them is still decidable: every array-like type is iterable, a class-like type is
+     * iterable when it is `Traversable` (maybe, when a subclass could be), every class-like type
+     * is an object. (`$super` is always a native type here, so its written name is the keyword.)
      */
     private static function intoNativeOutsideList(Type $sub, UncheckedType $super): Certainty
     {
-        $arrayLike = $sub instanceof ListType || $sub instanceof ArrayType || $sub instanceof ArrayShapeType;
-        $classLike = $sub instanceof ClassType || $sub instanceof EnumType
-            || $sub instanceof SelfType || $sub instanceof StaticType;
+        $class = self::className($sub);
 
         return match (true) {
-            $super->written === 'iterable' && $arrayLike, $super->written === 'object' && $classLike => Certainty::Yes,
+            $super->written === 'iterable' && self::isArrayLike($sub) => Certainty::Yes,
+            $super->written === 'iterable' && $class !== null => self::classInto($class, \Traversable::class),
+            $super->written === 'object' && $class !== null => Certainty::Yes,
             $super->written === 'iterable', $super->written === 'object' => Certainty::No,
             default => Certainty::Maybe,
+        };
+    }
+
+    /**
+     * Whether every instance of `$class` (or of a subclass) is an instance of `$super`: Yes when it
+     * is a subclass, No when it is final (or an enum) and is not, Maybe otherwise.
+     */
+    private static function classInto(string $class, string $super): Certainty
+    {
+        if (is_a($class, $super, true)) {
+            return Certainty::Yes;
+        }
+
+        return (new \ReflectionClass($class))->isFinal() ? Certainty::No : Certainty::Maybe;
+    }
+
+    public static function isArrayLike(Type $type): bool
+    {
+        return $type instanceof ListType || $type instanceof ArrayType || $type instanceof ArrayShapeType;
+    }
+
+    /**
+     * The class a class-like type stands for, or null when it is not class-like.
+     */
+    public static function className(Type $type): ?string
+    {
+        return match (true) {
+            $type instanceof ClassType, $type instanceof EnumType => $type->name,
+            $type instanceof SelfType, $type instanceof StaticType => $type->class,
+            default => null,
         };
     }
 

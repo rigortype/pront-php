@@ -85,8 +85,9 @@ final class TypeResolver
         $return = $this->resolveReturn($function, $returnTag, $scope, "{$subject} return type", $errors);
         $throws = $this->resolveThrows($doc, $scope, "{$subject} @throws", $errors);
 
-        if ($function instanceof \ReflectionMethod) {
-            $this->checkInheritance($function, array_keys($paramTags), $returnTag !== null, self::throwsTags($doc) !== [], $subject, $errors);
+        $own = new ResolvedSignature($subject, $parameters, $return, $throws, $errors->all());
+        if ($function instanceof \ReflectionMethod && !$function->getDeclaringClass()->isTrait()) {
+            $this->checkInheritance($function, array_keys($paramTags), $returnTag !== null, self::throwsTags($doc) !== [], $own, $errors);
         }
 
         return new ResolvedSignature($subject, $parameters, $return, $throws, $errors->all());
@@ -132,13 +133,25 @@ final class TypeResolver
 
                 return null;
             }
-            $type = self::keepDisjointNativeMembers($docType, $native);
+            [$type, $undecided] = self::keepDisjointNativeMembers($docType, $native);
+            if ($undecided !== null) {
+                $errors->add($subject, $undecided);
+
+                return null;
+            }
         }
 
         // As PHPStan does, a PHPDoc type of a parameter that defaults to null also accepts null.
-        if ($docType !== null && str_ends_with((string) $parameter, '= NULL ]')
-            && Subtype::check(new NullType(), $type) !== Certainty::Yes) {
-            $type = UnionType::of($type, new NullType());
+        if ($docType !== null && Subtype::check(new NullType(), $type) !== Certainty::Yes) {
+            $default = self::defaultIsNull($parameter);
+            if (is_string($default)) {
+                $errors->add($subject, $default);
+
+                return null;
+            }
+            if ($default) {
+                $type = UnionType::of($type, new NullType());
+            }
         }
 
         return $type === $validated || self::reportInputProblems($type, $subject, $errors) ? $type : null;
@@ -159,28 +172,58 @@ final class TypeResolver
      * members the PHPDoc type does not overlap stay in the resolved type, so `@param positive-int`
      * on `?int` is `int<1, max>|null`. Called only once the PHPDoc type is known to narrow `$native`.
      */
-    private static function keepDisjointNativeMembers(Type $docType, Type $native): Type
+    /**
+     * @return array{Type, ?string} the resolved type, and why it is undecidable when a native
+     *     member's disjointness from the PHPDoc type cannot be decided
+     */
+    private static function keepDisjointNativeMembers(Type $docType, Type $native): array
     {
         if (!$native instanceof UnionType) {
-            return $docType;
+            return [$docType, null];
         }
 
-        $atoms = $docType instanceof UnionType ? $docType->members : [$docType];
         $kept = [];
         foreach ($native->members as $member) {
-            $overlaps = false;
-            foreach ($atoms as $atom) {
-                if (Subtype::check($atom, $member) !== Certainty::No) {
-                    $overlaps = true;
-                    break;
-                }
+            $disjoint = Disjoint::check($docType, $member);
+            if ($disjoint === Certainty::Maybe) {
+                return [$docType, "cannot decide whether native type member {$member->describe()} overlaps "
+                    . "PHPDoc type {$docType->describe()}: a fragment is outside the Stage 1 list"];
             }
-            if (!$overlaps) {
+            if ($disjoint === Certainty::Yes) {
                 $kept[] = $member;
             }
         }
 
-        return $kept === [] ? $docType : UnionType::of($docType, ...$kept);
+        return [$kept === [] ? $docType : UnionType::of($docType, ...$kept), null];
+    }
+
+    /**
+     * Whether the parameter's default value is null, read without running code: the literal
+     * `null`, or a constant expression evaluated by reflection. An expression with `new` is not
+     * evaluated (it would run a constructor); unless it starts with `new` (an object), it is
+     * reported, as is an expression that fails to evaluate.
+     */
+    private static function defaultIsNull(\ReflectionParameter $parameter): bool|string
+    {
+        if (!$parameter->isDefaultValueAvailable()) {
+            return false;
+        }
+
+        $expression = preg_match('/ = (.*) \]\z/s', (string) $parameter, $match) === 1 ? $match[1] : '';
+        if (strcasecmp($expression, 'NULL') === 0) {
+            return true;
+        }
+        if (preg_match('/\bnew\b/i', $expression) === 1) {
+            return preg_match('/\Anew\b/i', $expression) === 1
+                ? false
+                : "cannot tell whether the default value {$expression} is null without running code";
+        }
+
+        try {
+            return $parameter->getDefaultValue() === null;
+        } catch (\Throwable $e) {
+            return "the default value {$expression} cannot be evaluated: {$e->getMessage()}";
+        }
     }
 
     /**
@@ -209,7 +252,9 @@ final class TypeResolver
                 return new UncheckedType(PhpDocTypeConverter::written($tag[1]), self::narrowingMessage($docType, $native, $narrowing));
             }
 
-            return self::keepDisjointNativeMembers($docType, $native);
+            [$type, $undecided] = self::keepDisjointNativeMembers($docType, $native);
+
+            return $undecided === null ? $type : new UncheckedType(PhpDocTypeConverter::written($tag[1]), $undecided);
         }
 
         return $docType ?? $native ?? new MixedType();
@@ -340,9 +385,12 @@ final class TypeResolver
                     continue;
                 }
                 $messages = [];
-                $name = in_array(strtolower($node->name), ['self', 'static'], true) && $scope->class !== null
-                    ? $scope->class
-                    : $scope->resolveClassName($node->name);
+                $keyword = strtolower($node->name);
+                $name = match (true) {
+                    $scope->class !== null && ($keyword === 'self' || $keyword === 'static') => $scope->class,
+                    $scope->class !== null && $keyword === 'parent' => (string) get_parent_class($scope->class),
+                    default => $scope->resolveClassName($node->name),
+                };
                 $type = $this->phpDoc->className($name, $messages);
                 foreach ($messages as $message) {
                     $errors->add($subject, $message);
@@ -380,9 +428,11 @@ final class TypeResolver
     }
 
     /**
-     * PHPStan inherits a parameter, return or `@throws` PHPDoc from an overridden or implemented
-     * method when this method does not declare its own. Stage 1 does not; such an inherited
-     * declaration is a pre-run error rather than silently ignored.
+     * PHPStan inherits a parameter, return or `@throws` PHPDoc from an overridden, implemented or
+     * abstract trait method when this method does not declare its own (parameters by position,
+     * constructor parameters by name). Stage 1 does not inherit: when an inherited declaration
+     * would change a resolved type, it is a pre-run error rather than silently ignored. An
+     * ancestor PHPDoc that only restates what this method already resolves to changes nothing.
      *
      * @param list<string> $taggedParameters
      */
@@ -391,63 +441,55 @@ final class TypeResolver
         array $taggedParameters,
         bool $hasReturnTag,
         bool $hasThrows,
-        string $subject,
+        ResolvedSignature $own,
         PreRunErrors $errors,
     ): void {
         $name = $method->getName();
-        $class = $method->getDeclaringClass();
-        $ancestors = [];
-        for ($parent = $class->getParentClass(); $parent !== false; $parent = $parent->getParentClass()) {
-            $ancestors[] = $parent;
-        }
-        array_push($ancestors, ...array_values($class->getInterfaces()));
-
-        $positions = [];
-        foreach ($method->getParameters() as $parameter) {
-            $positions[$parameter->getPosition()] = in_array($parameter->getName(), $taggedParameters, true);
-        }
-
+        $byName = strtolower($name) === '__construct';
         $seen = [];
-        foreach ($ancestors as $ancestor) {
-            if (!$ancestor->hasMethod($name)) {
-                continue;
-            }
-            $inherited = $ancestor->getMethod($name);
-            $key = $inherited->getDeclaringClass()->getName() . '::' . $name;
-            if ($inherited->isPrivate() || isset($seen[$key])) {
+        foreach (self::ancestorMethods($method) as $inherited) {
+            $key = $inherited->getDeclaringClass()->getName() . '::' . $inherited->getName();
+            if (isset($seen[$key])) {
                 continue;
             }
             $seen[$key] = true;
 
-            $doc = $this->parseDoc($inherited->getDocComment());
-            $slots = [];
-            $ancestorPositions = [];
-            foreach ($inherited->getParameters() as $parameter) {
-                $ancestorPositions[$parameter->getName()] = $parameter->getPosition();
-            }
+            $theirDoc = $this->parseDoc($inherited->getDocComment());
+            $theirTagged = [];
             foreach (self::PARAM_TAGS as $tagName) {
-                foreach ($doc->getParamTagValues($tagName) as $value) {
-                    $position = $ancestorPositions[substr($value->parameterName, 1)] ?? null;
-                    if ($position !== null && ($positions[$position] ?? true) === false) {
-                        $slots[$position] = "parameter #{$position}";
-                    }
+                foreach ($theirDoc->getParamTagValues($tagName) as $value) {
+                    $theirTagged[] = substr($value->parameterName, 1);
                 }
             }
-            ksort($slots);
-            if (!$hasReturnTag) {
-                foreach (self::RETURN_TAGS as $tagName) {
-                    if ($doc->getReturnTagValues($tagName) !== []) {
-                        $slots['return'] = 'return type';
-                        break;
-                    }
+            $theirReturnTagged = false;
+            foreach (self::RETURN_TAGS as $tagName) {
+                $theirReturnTagged = $theirReturnTagged || $theirDoc->getReturnTagValues($tagName) !== [];
+            }
+
+            $theirs = $this->resolve($inherited);
+            $theirParameters = array_values($inherited->getParameters());
+            $slots = [];
+            foreach ($method->getParameters() as $position => $parameter) {
+                if (in_array($parameter->getName(), $taggedParameters, true)) {
+                    continue;
+                }
+                $counterpart = $byName ? $parameter->getName() : ($theirParameters[$position] ?? null)?->getName();
+                if ($counterpart === null || !in_array($counterpart, $theirTagged, true)) {
+                    continue;
+                }
+                if (self::differs($theirs->parameters[$counterpart] ?? null, $own->parameters[$parameter->getName()] ?? null)) {
+                    $slots[] = "parameter \${$parameter->getName()}";
                 }
             }
-            if (!$hasThrows && self::throwsTags($doc) !== []) {
-                $slots['throws'] = '@throws';
+            if (!$hasReturnTag && $theirReturnTagged && self::differs($theirs->return, $own->return)) {
+                $slots[] = 'return type';
+            }
+            if (!$hasThrows && $theirs->throws !== null) {
+                $slots[] = '@throws';
             }
             if ($slots !== []) {
                 $errors->add(
-                    $subject,
+                    $own->subject,
                     "the PHPDoc of {$key}() for " . implode(', ', $slots)
                         . ' would be inherited, as PHPStan does; PHPDoc inheritance is not supported in Stage 1',
                 );
@@ -455,27 +497,75 @@ final class TypeResolver
         }
     }
 
-    /**
-     * The class-like whose docblock holds the aliases and templates in scope for a method: the
-     * trait that declares it, when it comes from one, otherwise the declaring class.
-     */
-    private static function docClass(\ReflectionMethod $method): \ReflectionClass
+    private static function differs(?Type $theirs, ?Type $ours): bool
     {
+        return $theirs === null || $ours === null || $theirs->describe() !== $ours->describe();
+    }
+
+    /**
+     * The non-private same-named methods of the parent chain, of every interface, and the abstract
+     * ones of the used traits.
+     *
+     * @return list<\ReflectionMethod>
+     */
+    private static function ancestorMethods(\ReflectionMethod $method): array
+    {
+        $name = $method->getName();
         $class = $method->getDeclaringClass();
+        $candidates = [];
+        for ($parent = $class->getParentClass(); $parent !== false; $parent = $parent->getParentClass()) {
+            $candidates[] = $parent;
+        }
+        array_push($candidates, ...array_values($class->getInterfaces()));
+
+        $methods = [];
+        foreach ($candidates as $candidate) {
+            if ($candidate->hasMethod($name) && !$candidate->getMethod($name)->isPrivate()) {
+                $methods[] = $candidate->getMethod($name);
+            }
+        }
+        foreach (self::traitsOf($class) as $trait) {
+            if ($trait->hasMethod($name) && $trait->getMethod($name)->isAbstract()) {
+                $methods[] = $trait->getMethod($name);
+            }
+        }
+
+        return $methods;
+    }
+
+    /**
+     * @return list<\ReflectionClass<object>>
+     */
+    private static function traitsOf(\ReflectionClass $class): array
+    {
+        $traits = [];
         $pending = array_values($class->getTraits());
         while ($pending !== []) {
             $trait = array_shift($pending);
-            if ($trait->hasMethod($method->getName())) {
-                $candidate = $trait->getMethod($method->getName());
+            $traits[] = $trait;
+            array_push($pending, ...array_values($trait->getTraits()));
+        }
+
+        return $traits;
+    }
+
+    /**
+     * The class-like whose docblock holds the aliases and templates in scope for a method: the
+     * trait that declares it (under any alias), when it comes from one, otherwise the declaring
+     * class.
+     */
+    private static function docClass(\ReflectionMethod $method): \ReflectionClass
+    {
+        foreach (self::traitsOf($method->getDeclaringClass()) as $trait) {
+            foreach ($trait->getMethods() as $candidate) {
                 if ($candidate->getFileName() === $method->getFileName()
                     && $candidate->getStartLine() === $method->getStartLine()) {
                     return $trait;
                 }
             }
-            array_push($pending, ...array_values($trait->getTraits()));
         }
 
-        return $class;
+        return $method->getDeclaringClass();
     }
 
     private function parseDoc(string|false $doc): PhpDocNode

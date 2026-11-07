@@ -23,6 +23,9 @@ final class IntegerLiteral
         }
 
         $php = self::parse($literal);
+        if ($php !== null && $php === (int) $literal) {
+            return null;
+        }
 
         return ($php === null ? 'not a valid PHP integer literal' : "PHP reads it as {$php}")
             . ', PHPStan 2.x as ' . (int) $literal . '; write it in decimal';

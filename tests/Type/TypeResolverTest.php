@@ -857,7 +857,7 @@ final class TypeResolverTest extends TestCase
 
         return [
             'nothing declared' => [$class, 'public function m(int $n, string $s): string {}',
-                'Documented::m() for parameter #0, parameter #1, return type, @throws would be inherited'],
+                'Documented::m() for parameter $n, parameter $s, return type, @throws would be inherited'],
             'parameters declared' => [$class, $doc('@param int<0, 5> $n', '@param string $s') . 'public function m(int $n, string $s): string {}',
                 'Documented::m() for return type, @throws would be inherited'],
             'renamed parameter declared by position' => [$class,
@@ -867,7 +867,21 @@ final class TypeResolverTest extends TestCase
                 $doc('@param int $n', '@psalm-param string $s', '@return string', '@phpstan-throws void') . 'public function m(int $n, string $s): string {}',
                 null],
             'interface' => [$interface, 'public function m(int $n): string {}',
-                'DocumentedContract::m() for parameter #0 would be inherited'],
+                'DocumentedContract::m() for parameter $n would be inherited'],
+            'grandparent reported once' => ['class Target extends \Pront\Tests\Type\Fixtures\Middle',
+                $doc('@param int $n', '@param string $s', '@return string') . 'public function m(int $n, string $s): string {}',
+                'Documented::m() for @throws would be inherited'],
+            'grandparent behind an undocumented override' => ['class Target extends \Pront\Tests\Type\Fixtures\Overriding',
+                'public function m(int $n, string $s): string {}',
+                'Documented::m() for parameter $n, parameter $s, return type, @throws would be inherited'],
+            'ancestor without tags' => ['class Target extends \Pront\Tests\Type\Fixtures\Untagged',
+                'public function m(int|string|null $x): int {}', null],
+            'restated native types' => ['class Target extends \Pront\Tests\Type\Fixtures\Restating', 'public function m(int $x): void {}', null],
+            'constructor by name' => ['class Target extends \Pront\Tests\Type\Fixtures\Constructed',
+                $doc('@param int $x') . 'public function __construct(int $x, int $b) {} public function m(): void {}',
+                null],
+            'abstract trait method' => ['class Target', 'use Fx\Contracted; public function m(int $x): void {}',
+                'Contracted::m() for parameter $x would be inherited'],
             'no ancestor' => ['class Target', 'public function m(int $n): string {}', null],
         ];
     }
@@ -883,6 +897,108 @@ final class TypeResolverTest extends TestCase
             self::assertOneErrorContaining($error, $signature);
             self::assertStringContainsString('PHPDoc inheritance is not supported in Stage 1', self::messages($signature)[0]);
         }
+    }
+
+    public function testConstructorParametersAreInheritedByName(): void
+    {
+        $method = TargetFactory::method(
+            self::doc(['@param int $x']) . 'public function __construct(int $x, int $b) {} public function m(): void {}',
+            '',
+            'class Target extends \Pront\Tests\Type\Fixtures\Constructed',
+        );
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod($method->class, '__construct'));
+
+        self::assertOneErrorContaining('Constructed::__construct() for parameter $b would be inherited', $signature);
+    }
+
+    /**
+     * The overlap test that decides which native union members stay (round-2 review): classes and
+     * interfaces overlap unless a common instance is impossible; an undecidable member is reported.
+     *
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function nativeMembersByOverlap(): array
+    {
+        return [
+            'class into its interface or another' => ['Circle', 'Figure|\Countable', self::FX . 'Circle'],
+            'final class keeps the other interface' => ['Fx\Sub\Square', 'Figure|\Countable', self::FX . 'Sub\Square|Countable'],
+            'interface into itself or another' => ['Figure', 'Figure|\Countable', self::FX . 'Shape'],
+            'list keeps int from iterable|int' => ['list<int>', 'iterable|int', 'list<int>|int'],
+            'int over int|callable is undecidable' => ['int', 'int|callable', null],
+        ];
+    }
+
+    #[DataProvider('nativeMembersByOverlap')]
+    public function testNativeMembersByOverlap(string $phpDoc, string $native, ?string $expected): void
+    {
+        $return = self::resolve(["@return {$phpDoc}"], "public function m(): {$native} {}");
+        self::assertSame([], self::messages($return));
+        self::assertSame($expected ?? "unchecked({$phpDoc})", $return->return?->describe());
+
+        if (!str_contains($native, 'Figure')) {
+            $input = self::resolve(["@param {$phpDoc} \$x"], "public function m({$native} \$x): void {}");
+            self::assertSame($expected, $input->parameters['x']?->describe());
+            if ($expected === null) {
+                self::assertOneErrorContaining('cannot decide whether native type member', $input);
+            }
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function classesIntoIterable(): array
+    {
+        return [
+            'Traversable class' => ['\Generator', 'iterable', 'Generator'],
+            'Traversable class, nullable' => ['\ArrayObject', '?iterable', 'ArrayObject|null'],
+            'non-final class may have a Traversable subclass' => ['Circle', 'iterable', 'unchecked(Circle)'],
+            'final class that is not Traversable' => ['Fx\Sub\Square', 'iterable', null],
+        ];
+    }
+
+    #[DataProvider('classesIntoIterable')]
+    public function testClassesIntoIterable(string $phpDoc, string $native, ?string $expected): void
+    {
+        $signature = self::resolve(["@return {$phpDoc}"], "public function m(): {$native} {}");
+
+        self::assertSame($expected, $signature->return?->describe());
+        if ($expected === null) {
+            self::assertOneErrorContaining('is not a subtype of native type', $signature);
+        } else {
+            self::assertSame([], self::messages($signature));
+        }
+    }
+
+    public function testConstantNullDefaultAddsNull(): void
+    {
+        $signature = self::resolve(['@param positive-int $x'], 'public function m($x = self::NUL): void {} const NUL = null;');
+
+        self::assertSame([], self::messages($signature));
+        self::assertSame('int<1, max>|null', $signature->parameters['x']?->describe());
+    }
+
+    public function testUnevaluableDefaultIsAPreRunError(): void
+    {
+        $signature = self::resolve(['@param positive-int $x'], 'public function m($x = PRONT_UNDEFINED_CONSTANT): void {}');
+
+        self::assertNull($signature->parameters['x']);
+        self::assertOneErrorContaining('PRONT_UNDEFINED_CONSTANT cannot be evaluated: Undefined constant', $signature);
+    }
+
+    public function testThrowsParentResolvesToTheParentClass(): void
+    {
+        $signature = self::resolve(['@throws parent'], 'public function m(): void {}', '', 'class Target extends \RuntimeException');
+
+        self::assertSame(['RuntimeException'], $signature->throws?->classes);
+    }
+
+    public function testAliasedTraitMethodKeepsTheTraitScope(): void
+    {
+        $method = TargetFactory::method('use Fx\WithAlias { m as aliased; }');
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod($method->class, 'aliased'));
+
+        self::assertOneErrorContaining('type alias TraitMoney (@phpstan-type) is not supported', $signature);
     }
 
     public function testPrivateParentMethodIsNotInherited(): void

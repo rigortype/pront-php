@@ -34,7 +34,20 @@ final class NativeTypeConverter
                 }
             }
 
-            return $failed || $members === [] ? null : UnionType::of(...$members);
+            if ($failed || $members === []) {
+                return null;
+            }
+
+            // Reflection reports `iterable` inside a union as `Traversable|array`; fold it back.
+            $names = array_map(static fn(Type $m): string => $m->describe(), $members);
+            $traversable = array_search(\Traversable::class, $names, true);
+            $array = array_search('array', $names, true);
+            if ($traversable !== false && $array !== false) {
+                unset($members[$traversable], $members[$array]);
+                $members[] = new UncheckedType('iterable', 'not in the Stage 1 list');
+            }
+
+            return UnionType::of(...array_values($members));
         }
 
         if ($type instanceof \ReflectionIntersectionType) {

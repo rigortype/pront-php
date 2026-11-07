@@ -72,6 +72,8 @@ final class ModelTest extends TestCase
             'decimal' => ['42', null],
             'zero' => ['0', null],
             'negative zero' => ['-0', null],
+            'leading zero, same reading' => ['00', null],
+            'hex zero, same reading' => ['0x0', null],
             'hex' => ['0x1F', 'PHP reads it as 31, PHPStan 2.x as 0; write it in decimal'],
             'negative hex' => ['-0x1F', 'PHP reads it as -31, PHPStan 2.x as 0; write it in decimal'],
             'legacy octal' => ['010', 'PHP reads it as 8, PHPStan 2.x as 10; write it in decimal'],
