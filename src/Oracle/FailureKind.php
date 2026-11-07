@@ -24,15 +24,17 @@ enum FailureKind: string
     /** An `#[Ensures]` condition returned false. */
     case EnsuresFalse = 'ensures false';
 
-    /** An `#[Ensures]` condition returned something other than a bool. */
+    /** An `#[Ensures]` condition returned something other than a bool, or its own return type rejected the non-bool it returned. */
     case EnsuresNotBool = 'ensures not bool';
 
-    /** An `#[Ensures]` condition threw something other than a `TypeError`. */
+    /** An `#[Ensures]` condition threw, other than the binding `TypeError` of `Unverifiable`. */
     case EnsuresThrew = 'ensures threw';
 
     /**
-     * An `#[Ensures]` condition raised a `TypeError`: the trial is *unverifiable* (ADR-0009 section
-     * 4), a runtime error with exit code 2 (ADR-0013), not a counterexample.
+     * Binding a value to an `#[Ensures]` condition parameter raised a `TypeError`: the trial is
+     * *unverifiable* (ADR-0009 section 4), a runtime error with exit code 2 (ADR-0013), not a
+     * counterexample. The engine has no such outcome kind, so it is a failed outcome a report must
+     * tell apart with `of()`.
      */
     case Unverifiable = 'unverifiable';
 

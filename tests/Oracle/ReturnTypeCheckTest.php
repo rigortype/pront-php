@@ -57,6 +57,7 @@ final class ReturnTypeCheckTest extends TestCase
             'non-empty-string' => [new StringType(true), ['0', 'a'], ['', 0]],
             'int literal' => [new LiteralType(5), [5], [5.0, '5', 6]],
             'float literal' => [new LiteralType(1.5), [1.5], [1, '1.5', NAN]],
+            'integral float literal (accepts the same int, as PHPStan lets through)' => [new LiteralType(1.0), [1.0, 1], [2, '1', true]],
             'string literal' => [new LiteralType('a'), ['a'], ['A', 'a ', 0]],
             'true literal' => [new LiteralType(true), [true], [false, 1]],
             'false literal' => [new LiteralType(false), [false], [true, 0, null]],

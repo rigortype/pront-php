@@ -46,7 +46,10 @@ final class Oracle
     /** The methods of this class that call user code; frames above them are not in a signature. */
     private const array CALLERS = ['callTarget', 'callCondition'];
 
-    /** The engine's methods that call user code (a throwable created while generating the input). */
+    /**
+     * The engine's methods that call user code (a throwable created while generating the input);
+     * the same list as `Engine::outerFrames()`, which is private to the engine.
+     */
     private const array ENGINE_CALLERS = ['generateInput', 'runProperty', 'releaseInput'];
 
     /** @var array<string, int<1, max>> target name => attempts that ended in an unchecked `Exception` */
@@ -189,21 +192,29 @@ final class Oracle
     }
 
     /**
-     * A `TypeError` the condition raised at its own boundary, called from `callCondition()` (the
-     * innermost frame of the trace): binding a value to a parameter makes the trial unverifiable
-     * (ADR-0009 section 4); the condition's own return type rejecting its result is a non-bool
-     * result. Anything else, including a `TypeError` from code the condition calls, is a throw.
+     * A `TypeError` the condition raised at its own boundary: the innermost frame is the condition
+     * called from `callCondition()`, and the message names that same function (an internal call the
+     * engine compiles without a frame of its own, such as `\strlen()`, names itself instead).
+     * Binding a value to a parameter makes the trial unverifiable (ADR-0009 section 4); the
+     * condition's own return type rejecting a non-bool result is a non-bool result, and rejecting
+     * `false` (a `: true` condition) is a false result. Anything else, including a `TypeError` from
+     * code the condition calls, is a throw.
      */
     private static function conditionThrew(Condition $condition, \Throwable $thrown): Outcome
     {
         $trace = $thrown->getTrace();
-        $boundary = $thrown instanceof \TypeError && !$thrown instanceof \ArgumentCountError
-            && ($trace[1]['class'] ?? null) === self::class && ($trace[1]['function'] ?? null) === 'callCondition';
-        if ($boundary && preg_match('/^.*\(\): Argument #\d+ \(\$\w+\) must be of type /', $thrown->getMessage()) === 1) {
+        $function = ($trace[0]['class'] ?? '') . ($trace[0]['type'] ?? '') . ($trace[0]['function'] ?? '');
+        $boundary = $thrown instanceof \TypeError
+            && ($trace[1]['class'] ?? null) === self::class && ($trace[1]['function'] ?? null) === 'callCondition'
+            && strstr($thrown->getMessage(), '(): ', true) === $function;
+        if ($boundary && preg_match('/\(\): Argument #\d+ \(\$\w+\) must be of type /', $thrown->getMessage()) === 1) {
             return FailureKind::Unverifiable->outcome($condition->subject . ': ' . self::signature($thrown));
         }
-        if ($boundary && preg_match('/\(\): Return value must be of type .+, (\S+) returned$/', $thrown->getMessage(), $match) === 1) {
-            return FailureKind::EnsuresNotBool->outcome($condition->subject . ' returned ' . $match[1]);
+        if ($boundary && preg_match('/\(\): Return value must be of type .+, (\S+) returned$/', $thrown->getMessage(), $match) === 1
+            && !in_array($match[1], ['true', 'bool'], true)) {
+            return $match[1] === 'false'
+                ? FailureKind::EnsuresFalse->outcome($condition->subject)
+                : FailureKind::EnsuresNotBool->outcome($condition->subject . ' returned ' . $match[1]);
         }
 
         return FailureKind::EnsuresThrew->outcome($condition->subject . ': ' . self::signature($thrown));

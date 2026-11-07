@@ -33,7 +33,8 @@ use Pront\Type\VoidType;
  * (`Oracle::uncheckedFragments()`), so a `Maybe` is never a silent pass.
  *
  * The check follows what PHPStan's return-type rule accepts in a strict-types file: `float`
- * accepts an int (as PHPStan's `FloatType::accepts()` and PHP's int-to-float widening do), an
+ * accepts an int (as PHPStan's `FloatType::accepts()` and PHP's int-to-float widening do; a float
+ * literal accepts the int of the same value, which PHPStan lets through as "maybe"), an
  * `array<string, V>` does not accept an int key, `void` accepts only null (what a `void` call
  * yields), and `never` accepts nothing. A `Stringable` object is not a `string`, even where a
  * non-strict file would let PHPStan accept it.
@@ -59,7 +60,9 @@ final class ReturnTypeCheck
             $type instanceof IntType => Certainty::of(is_int($value) && $type->min <= $value && $value <= $type->max),
             $type instanceof FloatType => Certainty::of(is_float($value) || is_int($value)),
             $type instanceof StringType => Certainty::of(is_string($value) && (!$type->nonEmpty || $value !== '')),
-            $type instanceof LiteralType => Certainty::of($value === $type->value),
+            $type instanceof LiteralType => Certainty::of(
+                $value === $type->value || (is_float($type->value) && is_int($value) && (float) $value === $type->value),
+            ),
             $type instanceof ListType => self::list($type, $value, $static),
             $type instanceof ArrayType => self::array($type, $value, $static),
             $type instanceof ArrayShapeType => self::shape($type, $value, $static),

@@ -147,6 +147,17 @@ final class OracleTest extends TestCase
         yield 'ensures declared bool returning an int is not bool' => [$ensures('static function (int $return): bool { return $return; }'), ['x' => 3], FailureKind::EnsuresNotBool, '#[Ensures] 1 returned int'];
         yield 'ensures declared bool returning null is not bool' => [$ensures('static function (int $return): bool { return null; }'), ['x' => 3], FailureKind::EnsuresNotBool, '#[Ensures] 1 returned null'];
         yield 'a TypeError from code the ensures calls is a throw' => [$ensures('static function (int $return): bool { return strlen($return) > 0; }'), ['x' => 3], FailureKind::EnsuresThrew, '#[Ensures] 1: TypeError@'];
+        yield 'a TypeError from a frameless internal call in the ensures is a throw' => [$ensures('static function (int $return): bool { return \\strlen($return) > 0; }'), ['x' => 3], FailureKind::EnsuresThrew, '#[Ensures] 1: TypeError@'];
+        yield 'a TypeError from \\count in the ensures is a throw' => [$ensures('static function (int $return): bool { return \\count($return) > 0; }'), ['x' => 3], FailureKind::EnsuresThrew, '#[Ensures] 1: TypeError@'];
+        yield 'ensures declared true returning false is false' => [$ensures('static function (int $return): true { return $return < 3; }'), ['x' => 3], FailureKind::EnsuresFalse, '::m() #[Ensures] 1'];
+        yield 'ensures declared int returning true is a throw' => [$ensures('static function (int $return): int { return $return < 3; }'), ['x' => 1], FailureKind::EnsuresThrew, '#[Ensures] 1: TypeError@'];
+        yield 'ensures declared int returning false is false' => [$ensures('static function (int $return): int { return $return < 3; }'), ['x' => 3], FailureKind::EnsuresFalse, '::m() #[Ensures] 1'];
+        yield 'ensures binding through a first-class callable is unverifiable' => [
+            "final class Checks { public static function small(int \$return): bool { return true; } } final class A { /** @return int|string */ #[Verify] #[\\Pront\\Attribute\\Ensures(Checks::small(...))] public static function m(int \$x): int|string { return 'a'; } }",
+            ['x' => 3],
+            FailureKind::Unverifiable,
+            '#[Ensures] 1: TypeError@',
+        ];
         yield 'an argument TypeError of a closure the ensures calls is a throw' => [
             $ensures('static function (int $return): bool { $f = static fn(string $s): bool => true; return $f($return); }'),
             ['x' => 3],
