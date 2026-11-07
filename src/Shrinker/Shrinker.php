@@ -64,7 +64,7 @@ final class Shrinker
     /** @var list<Draw> */
     private array $best = [];
 
-    private Outcome $failure;
+    private ?Outcome $failure = null;
 
     /** @var array<string, true> recordings already evaluated (or the best) */
     private array $seen = [];
@@ -100,8 +100,10 @@ final class Shrinker
      * The first evaluation replays `$failing` itself, and its outcome is the failure every candidate
      * must reproduce: a failure signature can depend on the call path (`Outcome::fromThrowable()`
      * includes the stack), so the original run's outcome, classified by another caller, is not
-     * compared. When that replay does not fail, nothing is shrunk and the stop reason is
-     * `StopReason::NotReproduced`.
+     * compared. When that replay does not fail, or fails differently from `$original` (the failure
+     * the trial reported, when the caller passes it), nothing is shrunk and the stop reason is
+     * `StopReason::NotReproduced`. `fromThrowable()` signatures do not depend on the call path, so
+     * passing the trial's outcome is the way to rule out shrinking a different failure.
      *
      * `$replay` regenerates the input from the buffer it is given, runs the property on it, and
      * returns the outcome; it must not keep the input once it returns (the attempt ends there,
@@ -112,20 +114,24 @@ final class Shrinker
      * @param list<Draw> $failing
      * @param callable(ChoiceBuffer): Outcome $replay
      */
-    public function shrink(array $failing, callable $replay): ShrinkResult
+    public function shrink(array $failing, callable $replay, ?Outcome $original = null): ShrinkResult
     {
+        if ($original !== null && $original->kind !== OutcomeKind::Failed) {
+            throw new \InvalidArgumentException('Only a failure can be shrunk');
+        }
         $this->replay = $replay(...);
         $this->best = $failing;
-        $this->failure = Outcome::invalid();
+        $this->failure = null;
         $this->seen = [self::key($failing) => true];
         $this->evaluations = 0;
         $this->accepted = 0;
         $this->deadline = ($this->clock)() + $this->maxSeconds;
 
         try {
-            [$this->failure] = $this->evaluate($failing);
-            if ($this->failure->kind !== OutcomeKind::Failed) {
-                return new ShrinkResult($this->best, $this->failure, $this->evaluations, 0, StopReason::NotReproduced);
+            [$first] = $this->evaluate($failing);
+            $this->failure = $first;
+            if ($first->kind !== OutcomeKind::Failed || ($original !== null && !$first->reproduces($original))) {
+                return new ShrinkResult($this->best, $first, $this->evaluations, 0, StopReason::NotReproduced);
             }
             do {
                 $before = $this->accepted;
@@ -360,7 +366,7 @@ final class Shrinker
         }
         $this->seen[$key] = true;
         [$outcome, $consumed] = $this->evaluate($candidate);
-        if (!$outcome->reproduces($this->failure) || Simplicity::compareBuffers($consumed, $this->best) >= 0) {
+        if ($this->failure === null || !$outcome->reproduces($this->failure) || Simplicity::compareBuffers($consumed, $this->best) >= 0) {
             return false;
         }
         $this->best = $consumed;

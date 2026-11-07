@@ -348,6 +348,7 @@ final class ShrinkerTest extends TestCase
 
         self::assertSame(StopReason::Budget, $result->stopReason);
         self::assertSame(0, $result->evaluations);
+        self::assertNull($result->failure);
         self::assertSame($start, $result->buffer);
     }
 
@@ -419,6 +420,27 @@ final class ShrinkerTest extends TestCase
     }
 
     /**
+     * When the caller passes the trial's failure, a first replay that fails differently is not
+     * shrunk (it would minimise another failure than the one reported).
+     */
+    public function testAFirstReplayFailingDifferentlyIsNotShrunk(): void
+    {
+        $start = [new Draw(DrawKind::Int, [700, 0])];
+        $replay = static fn(ChoiceBuffer $b): Outcome => $b->drawInt(0, 1000) >= 50 ? Outcome::failed('B') : Outcome::passed();
+
+        $result = (new Shrinker())->shrink($start, $replay, Outcome::failed('A'));
+
+        self::assertSame(StopReason::NotReproduced, $result->stopReason);
+        self::assertSame(1, $result->evaluations);
+        self::assertSame($start, $result->buffer);
+        self::assertSame('B', $result->failure?->signature);
+
+        $same = (new Shrinker())->shrink($start, $replay, Outcome::failed('B'));
+        self::assertSame([[50, 0]], $same->slots());
+        self::assertSame(StopReason::Fixpoint, $same->stopReason);
+    }
+
+    /**
      * The failure the trial loop saw ran under the trial loop's stack; the candidates run under the
      * shrinker's passes, each with its own stack. The harness frames are not part of the signature,
      * so the failure shrinks and has the signature the trial loop saw.
@@ -440,7 +462,7 @@ final class ShrinkerTest extends TestCase
         $seen = $runTrial($fresh);
         self::assertSame(OutcomeKind::Failed, $seen->kind);
 
-        $result = (new Shrinker())->shrink($fresh->consumed(), $runTrial);
+        $result = (new Shrinker())->shrink($fresh->consumed(), $runTrial, $seen);
 
         self::assertSame([[50, 0]], $result->slots());
         self::assertSame(StopReason::Fixpoint, $result->stopReason);

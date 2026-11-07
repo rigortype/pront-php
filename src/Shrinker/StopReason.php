@@ -17,8 +17,9 @@ enum StopReason
     case Budget;
 
     /**
-     * Replaying the failing buffer itself (the first evaluation) did not fail: nothing was shrunk,
-     * and the result is the input buffer (a flaky or state-dependent failure).
+     * Replaying the failing buffer itself (the first evaluation) did not fail, or failed differently
+     * from the original failure the caller passed: nothing was shrunk, and the result is the input
+     * buffer (a flaky or state-dependent failure).
      */
     case NotReproduced;
 
