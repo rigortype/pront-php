@@ -265,7 +265,7 @@ final class BinProntTest extends TestCase
             'public function __construct(int $base) { intdiv($base, 0); } #[Verify(seed: 1)] public function m(int $x): void {}',
             'public function __construct(int $base) {} #[Verify(seed: 1)] public function m(int $x): void {}',
             0,
-            ["    \$self = new \\A(base: 0)\n    (the attempt stopped while building \$self: the parameters below were not drawn)\n    \$x = 0\n", 'PASS A::m: no longer reproduces', 'The replay read 4 draws of the 2 recorded:'],
+            ["    \$self = new \\A(base: 0)\n    (the recorded buffer ends inside \$self: the parameters below are read as zero)\n    \$x = 0\n", 'PASS A::m: no longer reproduces', 'The replay read 4 draws of the 2 recorded:'],
         ];
         yield 'the input is now discarded' => [
             $failing,
@@ -290,8 +290,8 @@ final class BinProntTest extends TestCase
         [$code, $replay] = self::pront($project, ['--replay', $token]);
         $replay = $project->relative($replay);
         self::assertContainsInOrder($expected, $replay);
-        if (!str_contains(implode("\n", $expected), 'not drawn')) {
-            self::assertStringNotContainsString('not drawn', $replay);
+        if (!str_contains(implode("\n", $expected), 'ends inside')) {
+            self::assertStringNotContainsString('ends inside', $replay);
         }
         self::assertSame($exitCode, $code, $replay);
     }

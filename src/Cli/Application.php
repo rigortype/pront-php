@@ -188,7 +188,7 @@ final class Application
             ? ChoiceBuffer::fresh(Prng::forTrial($token->seed, $token->k))
             : ChoiceBuffer::repairing($token->buffer);
         $this->line('  Input:');
-        $this->input($target, $buffer, $token->buffer);
+        $this->input($target, $buffer, $token->buffer, false);
         [$fits, $caveat] = self::fit($token, $buffer);
         if (!$fits) {
             $this->line("  The recorded draws no longer match the parameters of {$token->target} (a draw of another kind is read where one was recorded): the target changed, and the input above is not the recorded one.");
@@ -368,7 +368,7 @@ final class Application
                 StopReason::Time => 'stopped by the time limit, possibly not minimal',
             },
         ));
-        $this->input($target, ChoiceBuffer::repairing($counterexample->buffer), $counterexample->buffer);
+        $this->input($target, ChoiceBuffer::repairing($counterexample->buffer), $counterexample->buffer, true);
         $this->line(sprintf(
             '  Re-run %d times: reproduced %d times%s.',
             $counterexample->reruns,
@@ -384,8 +384,11 @@ final class Application
      * the constructor call with its drawn arguments.
      *
      * @param list<Draw>|null $recorded the recorded buffer, to tell draws it never made
+     * @param bool $consumed whether `$recorded` is what an attempt of this run consumed (a
+     *     counterexample), so a buffer that ends inside `$self` means the attempt stopped there; a
+     *     replay token may hold an edited shrink candidate, which can end anywhere
      */
-    private function input(Target $target, ChoiceBuffer $buffer, ?array $recorded): void
+    private function input(Target $target, ChoiceBuffer $buffer, ?array $recorded, bool $consumed): void
     {
         try {
             if ($target->receiver instanceof ConstructorGenerator) {
@@ -400,7 +403,9 @@ final class Application
             $afterReceiver = count($buffer->consumed());
             $parameters = $target->arguments->generate($buffer);
             if ($recorded !== null && count($buffer->consumed()) > count($recorded) && $afterReceiver >= count($recorded)) {
-                $this->line('    (the attempt stopped while building $self: the parameters below were not drawn)');
+                $this->line($consumed
+                    ? '    (the attempt stopped while building $self: the parameters below were not drawn)'
+                    : '    (the recorded buffer ends inside $self: the parameters below are read as zero)');
             }
             foreach ($parameters as $name => $value) {
                 $this->line("    \${$name} = " . ValueRenderer::render($value));

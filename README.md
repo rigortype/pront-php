@@ -40,6 +40,11 @@ trial ends the process with a fatal error (memory or time limit), Pront prints t
 STDERR and exits with 1. If the process is killed, the next run prints the unfinished attempt's
 replay token once; nothing is re-run automatically.
 
+A replay exits with 1 when it fails and 0 when it no longer reproduces. It exits with 2 for a
+damaged token or one from another Pront version or algorithm, a token whose target is no longer
+verified, an unverifiable trial, and a pass on an input that no longer matches the recorded draws
+(the target's parameters changed).
+
 A replay reproduces Pront's inputs of one attempt, not static or global state that earlier trials
 left behind, so a replay that passes does not prove the bug is gone.
 
