@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Pront\Discovery;
 
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -28,6 +29,12 @@ final class SourceIndex
 
     /** @var list<Placement> */
     private array $placements = [];
+
+    /** @var array<string, string> file => why it is not loaded */
+    private array $unloadable = [];
+
+    /** @var list<array{string, string, int}> */
+    private array $suspects = [];
 
     /** @var array<string, array{classes: list<string>, functions: list<string>}> by file */
     private array $declarations = [];
@@ -99,7 +106,7 @@ final class SourceIndex
                 if ($node instanceof Node\Stmt\Function_) {
                     $this->functions[] = (string) $node->namespacedName;
                 }
-                if ($node instanceof Node\Stmt\ClassLike && $node->name !== null && $this->inAnonymousClass() === false) {
+                if ($node instanceof Node\Stmt\ClassLike && $node->name !== null) {
                     $this->classLikes[] = $this->declaration($node);
                 }
 
@@ -263,15 +270,105 @@ final class SourceIndex
         $classes = [];
         foreach ($collector->classLikes as $declaration) {
             $key = strtolower($declaration->name);
-            if (isset($this->classLikes[$key]) && $this->classLikes[$key]->file !== $file) {
-                $errors->add($declaration->name, "is declared in both {$this->classLikes[$key]->file} and {$file}");
+            $existing = $this->classLikes[$key] ?? null;
+            if ($existing === null) {
+                $this->classLikes[$key] = $declaration;
+                $classes[] = $declaration->name;
                 continue;
             }
-            $this->classLikes[$key] = $declaration;
-            $classes[] = $declaration->name;
+            // Loading a file that redeclares a loaded class is an uncatchable fatal, and with two
+            // declarations in one file Pront cannot tell which one runs: the file is not loaded,
+            // and the Pront Attributes of every declaration are kept so they are reported.
+            if ($existing->file === $file) {
+                $this->unloadable[$file] = "declares {$declaration->name} more than once; Pront cannot tell which declaration runs";
+                $this->classLikes[$key] = new ClassLikeDeclaration(
+                    $existing->name,
+                    $existing->kind,
+                    $existing->file,
+                    $existing->line,
+                    $existing->parents,
+                    $existing->prontMethods + $declaration->prontMethods,
+                );
+            } else {
+                $errors->add($declaration->name, "is declared in both {$existing->file} and {$file}");
+                $this->unloadable[$file] = "redeclares {$declaration->name}, already declared in {$existing->file}";
+            }
         }
         array_push($this->placements, ...$collector->placements);
         $this->declarations[$file] = ['classes' => $classes, 'functions' => $collector->functions];
+
+        foreach ((new NodeFinder())->findInstanceOf($ast, Node\Attribute::class) as $attribute) {
+            $this->checkAttribute($attribute, $file);
+        }
+    }
+
+    /**
+     * Two things about any Attribute, found before loading. A non-static closure or an arrow
+     * function in its arguments is a compile-time fatal that would end the run (ADR-0009 section
+     * 4), so the file is not loaded. A `#[Verify]` or `#[Ensures]` that does not resolve to
+     * `Pront\Attribute\` (a missing `use` import) is recorded, so it is reported when the class
+     * it names does not exist rather than silently ignored.
+     */
+    private function checkAttribute(Node\Attribute $attribute, string $file): void
+    {
+        foreach ($attribute->args as $arg) {
+            $invalid = self::invalidClosure($arg);
+            if ($invalid !== null) {
+                $this->unloadable[$file] ??= sprintf(
+                    'line %d: an Attribute argument holds %s; PHP allows only static function closures there, and loading the file would be a fatal error',
+                    $invalid->getStartLine(),
+                    $invalid instanceof Node\Expr\ArrowFunction ? 'an arrow function' : 'a closure that is not static',
+                );
+            }
+        }
+
+        $name = $attribute->name->toString();
+        $short = strtolower(substr($name, (int) strrpos('\\' . $name, '\\')));
+        if (in_array($short, ['verify', 'ensures'], true) && stripos($name, self::ATTRIBUTE_NAMESPACE) !== 0) {
+            $this->suspects[] = [$name, $file, $attribute->getStartLine()];
+        }
+    }
+
+    /**
+     * The first arrow function or non-static closure in a constant expression; the body of a
+     * static closure is ordinary code and is not searched.
+     */
+    private static function invalidClosure(Node $node): ?Node
+    {
+        if ($node instanceof Node\Expr\ArrowFunction || $node instanceof Node\Expr\Closure && !$node->static) {
+            return $node;
+        }
+        foreach ($node->getSubNodeNames() as $name) {
+            if ($node instanceof Node\Expr\Closure && $name === 'stmts') {
+                continue;
+            }
+            $children = $node->{$name};
+            foreach (is_array($children) ? $children : [$children] as $child) {
+                if ($child instanceof Node && ($found = self::invalidClosure($child)) !== null) {
+                    return $found;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Why a file in scope must not be loaded, or null.
+     */
+    public function unloadable(string $file): ?string
+    {
+        return $this->unloadable[$file] ?? null;
+    }
+
+    /**
+     * Attributes named like Pront's that resolve elsewhere: name, file, line.
+     *
+     * @return list<array{string, string, int}>
+     */
+    public function suspects(): array
+    {
+        return $this->suspects;
     }
 
     /**
@@ -327,6 +424,34 @@ final class SourceIndex
     public function declaredIn(string $file): array
     {
         return $this->declarations[$file] ?? ['classes' => [], 'functions' => []];
+    }
+
+    /**
+     * Whether a parent chain of `$name` reaches a class-like that is neither in the index nor
+     * already declared by PHP itself, so where it leads is known only after loading.
+     */
+    public function leavesIndex(string $name): bool
+    {
+        $seen = [];
+        $pending = [$name];
+        while ($pending !== []) {
+            $current = array_pop($pending);
+            $declaration = $this->classLike($current);
+            if ($declaration === null) {
+                $known = class_exists($current, false) || interface_exists($current, false) || trait_exists($current, false);
+                if (!$known || !(new \ReflectionClass($current))->isInternal()) {
+                    return true;
+                }
+                continue;
+            }
+            if (isset($seen[strtolower($declaration->name)])) {
+                continue;
+            }
+            $seen[strtolower($declaration->name)] = true;
+            array_push($pending, ...$declaration->parents);
+        }
+
+        return false;
     }
 
     /**

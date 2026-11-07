@@ -10,7 +10,8 @@ use Pront\PreRun\PreRunErrors;
 /**
  * The files discovery reads: every `*.php` file under the configured `paths` (an explicitly named
  * file is taken whatever its extension), minus the `exclude` patterns, sorted and without
- * duplicates. A path that does not exist is a pre-run error.
+ * duplicates. A path that does not exist, or whose every file is excluded, is a pre-run error.
+ * `vendor` is excluded unless a path names something inside it.
  */
 final class SourceFiles
 {
@@ -25,9 +26,10 @@ final class SourceFiles
 
             return [];
         }
-        $patterns = array_map(self::regex(...), [...Config::DEFAULT_EXCLUDE, ...$config->exclude]);
+        $defaults = array_map(self::regex(...), Config::DEFAULT_EXCLUDE);
+        $patterns = array_map(self::regex(...), $config->exclude);
 
-        $files = [];
+        $kept = [];
         foreach ($config->paths as $path) {
             $absolute = self::isAbsolute($path) ? $path : $base . DIRECTORY_SEPARATOR . $path;
             $real = realpath($absolute);
@@ -35,21 +37,29 @@ final class SourceFiles
                 $errors->add('pront.php', "paths: {$path} does not exist");
                 continue;
             }
+            $files = [];
             if (is_file($real)) {
                 $files[] = $real;
-                continue;
-            }
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($real, \FilesystemIterator::SKIP_DOTS),
-            );
-            foreach ($iterator as $file) {
-                if ($file instanceof \SplFileInfo && $file->isFile() && strtolower($file->getExtension()) === 'php') {
-                    $files[] = (string) realpath($file->getPathname());
+            } else {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($real, \FilesystemIterator::SKIP_DOTS),
+                );
+                foreach ($iterator as $file) {
+                    if ($file instanceof \SplFileInfo && $file->isFile() && strtolower($file->getExtension()) === 'php') {
+                        $files[] = (string) realpath($file->getPathname());
+                    }
                 }
             }
+
+            // A path the user names inside `vendor` overrides the default exclusion.
+            $applied = self::excluded($real, $base, $defaults) ? $patterns : [...$defaults, ...$patterns];
+            $remaining = array_filter($files, static fn(string $file): bool => !self::excluded($file, $base, $applied));
+            if ($files !== [] && $remaining === []) {
+                $errors->add('pront.php', "paths: every file under {$path} is excluded");
+            }
+            array_push($kept, ...$remaining);
         }
 
-        $kept = array_filter($files, static fn(string $file): bool => !self::excluded($file, $base, $patterns));
         $kept = array_values(array_unique($kept));
         sort($kept, SORT_STRING);
 
@@ -87,7 +97,11 @@ final class SourceFiles
 
     private static function regex(string $pattern): string
     {
-        $pattern = trim(str_replace('\\', '/', $pattern), '/');
+        $pattern = str_replace('\\', '/', $pattern);
+        while (str_starts_with($pattern, './')) {
+            $pattern = substr($pattern, 2);
+        }
+        $pattern = trim($pattern, '/');
         $regex = '';
         $length = strlen($pattern);
         for ($i = 0; $i < $length; $i++) {

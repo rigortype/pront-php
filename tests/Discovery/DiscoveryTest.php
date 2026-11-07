@@ -232,6 +232,60 @@ final class DiscoveryTest extends TestCase
             ['A::m'],
             [],
         ];
+        yield 'two declarations of one class in one file' => [
+            'if (PHP_VERSION_ID > 0) { final class A { #[Verify] public static function m(): void {} } } else { final class A {} }',
+            [],
+            ['src/A.php: not loaded: declares A more than once', 'A::m(): not read, because loading'],
+        ];
+        yield 'two declarations, the verified one second' => [
+            'if (PHP_VERSION_ID < 0) { final class A {} } else { final class A { #[Verify] public static function m(): void {} } }',
+            [],
+            ['src/A.php: not loaded: declares A more than once', 'A::m(): not read, because loading'],
+        ];
+        yield 'a closure that is not static' => [
+            'final class A { #[Verify] #[Ensures(function (int $return): bool { return true; })] public function m(): int { return 1; } }',
+            [],
+            ['src/A.php: not loaded: line 10: an Attribute argument holds a closure that is not static', 'A::m(): not read, because loading'],
+        ];
+        yield 'an arrow function' => [
+            'final class A { #[Verify] #[Ensures(fn (int $return): bool => true)] public function m(): int { return 1; } }',
+            [],
+            ['src/A.php: not loaded: line 10: an Attribute argument holds an arrow function', 'A::m(): not read, because loading'],
+        ];
+        yield 'a non-static closure inside a static closure is ordinary code' => [
+            'final class A { #[Verify] #[Ensures(static function (int $return): bool { $f = fn () => true; return $f(); })] public function m(): int { return 1; } }',
+            ['A::m'],
+            [],
+        ];
+        yield 'a #[Verify] without its use import' => [
+            'final class A { #[\Verify] public static function m(): void {} #[Tests\Ensures] public static function n(): void {} }',
+            [],
+            [
+                'src/A.php:10: #[Verify] resolves to Verify, which does not exist; Pront\'s Attribute is Pront\Attribute\Verify (is a use import missing?)',
+                'src/A.php:10: #[Ensures] resolves to Tests\Ensures, which does not exist; Pront\'s Attribute is Pront\Attribute\Ensures',
+            ],
+        ];
+        yield 'an Attribute of the project\'s own named Verify' => [
+            '#[\Attribute] final class MyVerify {} final class A { #[Lib\Verify] public static function m(): void {} }',
+            [],
+            [],
+            "namespace {NS}\\Lib;\n#[\\Attribute] final class Verify {}\n",
+        ];
+        yield 'a function that is not declared' => [
+            'if (PHP_VERSION_ID < 0) { #[Verify] function f(): void {} }',
+            [],
+            ['f(): cannot be read: Function f() does not exist'],
+        ];
+        yield 'a private verified method is not a parent contract' => [
+            'class A { #[Verify] private static function m(): void {} } final class B extends A { #[Verify] public static function m(): void {} }',
+            ['B::m'],
+            ['A::m(): is not public'],
+        ];
+        yield 'a self-typed condition parameter resolves in the condition\'s class' => [
+            'final class A { #[Verify] #[Ensures(static function (self $return): bool { return true; })] public function m(): int { return 1; } }',
+            [],
+            ['parameter $return: its type self cannot accept the bound int'],
+        ];
         yield 'one target\'s error leaves the others' => [
             'final class A { #[Verify] public static function ok(): void {} #[Verify] public static function bad(mixed $m): void {} }',
             ['A::ok'],
@@ -244,9 +298,9 @@ final class DiscoveryTest extends TestCase
      * @param list<string> $errors
      */
     #[DataProvider('cases')]
-    public function testDiscovery(string $source, array $targets, array $errors): void
+    public function testDiscovery(string $source, array $targets, array $errors, string $after = ''): void
     {
-        [$project, $result] = self::discover(['src/A.php' => self::php($source)]);
+        [$project, $result] = self::discover(['src/A.php' => self::php($source) . ($after === '' ? '' : "\n{$after}")]);
 
         self::assertSame($targets, self::targetNames($project, $result));
         self::assertErrors($errors, self::errors($project, $result));
@@ -318,6 +372,10 @@ final class DiscoveryTest extends TestCase
         yield 'a reserved name of a method parameter binds the parameter' => [
             '#[Ensures(static function (string $return, int $__return): bool { return true; })] public function m(string $return): int { return 1; }',
             [[BindingKind::Parameter, 'return'], [BindingKind::Return, null]],
+        ];
+        yield 'a prefixed name that is not reserved is an ordinary parameter' => [
+            '#[Ensures(static function (int $__foo): bool { return true; })] public function m(int $__foo): int { return 1; }',
+            [[BindingKind::Parameter, '__foo']],
         ];
         yield 'static method reference' => [
             '#[Ensures([Checks::class, "positive"])] public function m(): int { return 1; }',
@@ -531,6 +589,9 @@ final class DiscoveryTest extends TestCase
         yield 'exclude with **/ at any depth' => [['.'], ['**/Fixtures'], ['A', 'B', 'C']];
         yield 'exclude with **/ at the top' => [['.'], ['**/lib'], ['A', 'B', 'C']];
         yield 'a * does not cross a /' => [['.'], ['*.php'], ['E', 'A', 'B', 'C']];
+        yield 'a leading ./ in a pattern' => [['.'], ['./tests'], ['E', 'A', 'B']];
+        yield 'a path inside vendor overrides the default' => [['src', 'vendor/acme'], [], ['A', 'B', 'D']];
+        yield 'a file inside vendor overrides the default' => [['vendor/acme/D.php'], [], ['D']];
     }
 
     /**
@@ -549,6 +610,90 @@ final class DiscoveryTest extends TestCase
 
         self::assertSame([], self::errors($project, $result));
         self::assertSame(array_map(static fn(string $c): string => "{$c}::m", $classes), self::targetNames($project, $result));
+    }
+
+    public function testAPathWhoseFilesAreAllExcludedIsAPreRunError(): void
+    {
+        [$project, $result] = self::discover(
+            ['src/A.php' => self::php('final class A {}'), 'tests/T.php' => self::php('final class T {}')],
+            new Config(['src', 'tests'], ['tests/**']),
+        );
+
+        self::assertSame(['pront.php: paths: every file under tests is excluded'], self::errors($project, $result));
+    }
+
+    public function testDuplicateClassAcrossFilesIsNotLoaded(): void
+    {
+        [$project, $result] = self::discover([
+            'src/a.php' => self::php('final class Dup { #[Verify] public static function m(): void {} }'),
+            'src/b.php' => self::php('final class Dup {} final class Other { #[Verify] public static function m(): void {} }'),
+        ]);
+
+        self::assertSame(['Dup::m'], self::targetNames($project, $result));
+        self::assertErrors([
+            'Dup: is declared in both src/a.php and src/b.php',
+            'src/b.php: not loaded: redeclares Dup, already declared in src/a.php',
+            'Other::m(): not read, because loading src/b.php failed',
+        ], self::errors($project, $result));
+    }
+
+    public function testAChainThroughAClassOutsidePathsIsFollowedAfterLoading(): void
+    {
+        $project = new Project([
+            'src/A.php' => self::php('class A { #[Verify] public function m(): void {} }'),
+            'lib/Mid.php' => self::php('class Mid extends A {}'),
+            'src/C.php' => self::php('final class C extends Mid {}'),
+        ]);
+        $namespace = $project->namespace;
+        $autoload = static function (string $class) use ($project, $namespace): void {
+            if ($class === "{$namespace}\\Mid") {
+                require "{$project->directory}/lib/Mid.php";
+            }
+        };
+        spl_autoload_register($autoload);
+        try {
+            $result = (new Discovery())->discover(new Config(['src']), $project->directory);
+        } finally {
+            spl_autoload_unregister($autoload);
+        }
+
+        self::assertSame([], self::errors($project, $result));
+        self::assertSame(['C'], array_map($project->relative(...), array_keys($result->unverifiedUntilStage3)));
+    }
+
+    public function testAnAbstractContractClassIsNotListedAgain(): void
+    {
+        [$project, $result] = self::discover([
+            'src/Z.php' => self::php('class Z { #[Verify] public static function s(): void {} }'),
+            'src/A.php' => self::php('abstract class A extends Z { #[Verify] abstract public function m(): void; }'),
+            'src/B.php' => self::php('final class B extends Z {}'),
+        ]);
+
+        self::assertErrors(['A::m(): #[Verify] or a contract on an interface or abstract method'], self::errors($project, $result));
+        self::assertSame(['B'], array_map($project->relative(...), array_keys($result->unverifiedUntilStage3)));
+    }
+
+    public function testAFatalWhileLoadingEndsWithExitCode2(): void
+    {
+        $project = new Project([
+            'src/A.php' => self::php('class A { #[Verify] public function m(int $x): void {} }'),
+            'src/B.php' => self::php('final class B extends A { public function m(string $x): void {} }'),
+        ]);
+        $script = $project->directory . '/run.php';
+        file_put_contents($script, sprintf(
+            '<?php require %s; (new Pront\Discovery\Discovery())->discover(new Pront\Config\Config(["src"]), %s); echo "survived";',
+            var_export(dirname(__DIR__, 2) . '/vendor/autoload.php', true),
+            var_export($project->directory, true),
+        ));
+        $process = proc_open([PHP_BINARY, '-d', 'display_errors=stderr', $script], [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        self::assertIsResource($process);
+        $stdout = (string) stream_get_contents($pipes[1]);
+        $stderr = (string) stream_get_contents($pipes[2]);
+        $status = proc_close($process);
+
+        self::assertSame(2, $status, $stderr);
+        self::assertSame('', $stdout);
+        self::assertStringContainsString('Pront: pre-run error: ' . realpath($project->directory) . '/src/B.php: loading it stopped PHP: Declaration of', $stderr);
     }
 
     public function testMissingPathIsAPreRunError(): void

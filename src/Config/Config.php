@@ -13,7 +13,7 @@ namespace Pront\Config;
  * one path segment, `**` crosses segments, and `**` before a slash also matches no directory at
  * all. A pattern excludes a file when it matches the file or one of its parent directories, so
  * `tests` and `tests/**` both exclude everything under `tests/`.
- * `vendor` is always excluded (ADR-0012 section 1).
+ * `vendor` is excluded by default (ADR-0012 section 1), unless a path names something inside it.
  */
 final readonly class Config
 {

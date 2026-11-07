@@ -42,6 +42,11 @@ final class Discovery
     /** @var array<string, bool|'loading'> per file, during one discovery */
     private array $loaded = [];
 
+    /** The candidate file being loaded, for the shutdown function. */
+    private static ?string $loading = null;
+
+    private static bool $guarded = false;
+
     /** @var array<string, true> classes reported under ADR-0012 section 1, by lower-case name */
     private array $reported = [];
 
@@ -80,12 +85,14 @@ final class Discovery
                     }
                 }
 
-                return false;
+                // A chain through a class outside `paths` can only be followed once loaded.
+                return $contracts !== [] && $index->leavesIndex($d->name);
             },
         ));
 
         $candidates = array_unique([
             ...array_map(static fn(Placement $p): string => $p->file, $index->placements()),
+            ...array_map(static fn(array $suspect): string => $suspect[1], $index->suspects()),
             ...array_map(static fn(ClassLikeDeclaration $c): string => $c->file, [...$contracts, ...$related]),
         ]);
         sort($candidates, SORT_STRING);
@@ -95,6 +102,13 @@ final class Discovery
 
         foreach ($index->placements() as $placement) {
             $this->readPlacement($placement, $errors);
+        }
+        foreach ($index->suspects() as [$name, $file, $line]) {
+            $short = substr($name, (int) strrpos('\\' . $name, '\\'));
+            if (!class_exists($name)) {
+                $errors->add("{$file}:{$line}", "#[{$short}] resolves to {$name}, which does not exist; "
+                    . "Pront's Attribute is " . SourceIndex::ATTRIBUTE_NAMESPACE . ucfirst(strtolower($short)) . ' (is a use import missing?)');
+            }
         }
 
         $targets = [];
@@ -135,6 +149,12 @@ final class Discovery
             return $this->loaded[$file] !== false;
         }
         $this->loaded[$file] = 'loading';
+        $unloadable = $index->unloadable($file);
+        if ($unloadable !== null) {
+            $errors->add($file, "not loaded: {$unloadable}");
+
+            return $this->loaded[$file] = false;
+        }
 
         $declared = $index->declaredIn($file);
         $existing = [
@@ -169,6 +189,9 @@ final class Discovery
             }
         }
 
+        self::guardFatals();
+        $previous = self::$loading;
+        self::$loading = $file;
         try {
             (static function (string $__file): void {
                 require_once $__file;
@@ -177,9 +200,38 @@ final class Discovery
             $errors->add($file, "loading failed: " . $e::class . ": {$e->getMessage()}");
 
             return $this->loaded[$file] = false;
+        } finally {
+            self::$loading = $previous;
         }
 
         return $this->loaded[$file] = true;
+    }
+
+    /**
+     * A fatal error while a candidate file is loaded (an incompatible override, a compile error
+     * the static checks do not catch) cannot be caught and ends the process. A shutdown function
+     * then names the file and ends with exit code 2, the pre-run error class of ADR-0013, instead
+     * of PHP's 255. The other targets of that run are lost; this is the one pre-run error that
+     * does not leave them (see the PR's known limits).
+     */
+    private static function guardFatals(): void
+    {
+        if (self::$guarded) {
+            return;
+        }
+        self::$guarded = true;
+        register_shutdown_function(static function (): void {
+            if (self::$loading === null) {
+                return;
+            }
+            $error = error_get_last();
+            fwrite(STDERR, sprintf(
+                "Pront: pre-run error: %s: loading it stopped PHP: %s\nNothing was verified.\n",
+                self::$loading,
+                $error['message'] ?? 'the process ended while the file was loading',
+            ));
+            exit(2);
+        });
     }
 
     /**
@@ -356,8 +408,7 @@ final class Discovery
             }
         }
         $returnType = $signature->return;
-        $returnsNothing = $returnType instanceof VoidType || $returnType instanceof NeverType
-            || in_array(strtolower((string) $method->getReturnType()), ['void', 'never'], true);
+        $returnsNothing = $returnType instanceof VoidType || $returnType instanceof NeverType;
         $receiverType = $class->isEnum() ? new EnumType($class->getName()) : new ClassType($class->getName());
 
         $conditions = [];
@@ -386,8 +437,10 @@ final class Discovery
                 }
 
                 $bound = null;
-                $unprefixed = str_starts_with($name, '__') ? substr($name, 2) : $name;
-                if (!str_starts_with($name, '__') && in_array($name, $parameters, true)) {
+                // Only the three prefixed reserved names are aliases; `$__foo` is an ordinary name.
+                $alias = in_array($name, ['__return', '__self', '__old'], true);
+                $unprefixed = $alias ? substr($name, 2) : $name;
+                if (!$alias && in_array($name, $parameters, true)) {
                     $bindings[] = new Binding(BindingKind::Parameter, $name);
                     $bound = $signature->parameters[$name] ?? null;
                     $declared = $parameter->getType();
@@ -537,7 +590,7 @@ final class Discovery
     {
         $listed = [];
         foreach ($related as $declaration) {
-            if ($declaration->kind !== 'class' || isset($this->reported[strtolower($declaration->name)])
+            if (isset($this->reported[strtolower($declaration->name)])
                 || !self::declared($declaration->name)) {
                 continue;
             }
