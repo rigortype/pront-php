@@ -49,6 +49,15 @@ final class TypeResolver
     /** @var array<string, ResolvedSignature> methods resolved so far, by `Class::method` */
     private array $resolvedMethods = [];
 
+    /**
+     * The winning PHPDoc types of each resolved method, as written (before the native type is
+     * applied), by `Class::method`; null when the tag does not resolve. Inherited PHPDoc is
+     * applied to the overriding method's native type, as PHPStan does.
+     *
+     * @var array<string, array{parameters: array<string, ?Type>, return: array{?Type}|null}>
+     */
+    private array $phpDocTypes = [];
+
     public function __construct()
     {
         $config = new ParserConfig([]);
@@ -96,11 +105,23 @@ final class TypeResolver
 
         $returnTag = $this->winningTag($doc, self::RETURN_TAGS, $subject, $errors);
         $return = $this->resolveReturn($function, $returnTag, $scope, "{$subject} return type", $errors);
+
+        if ($function instanceof \ReflectionMethod) {
+            $convert = function (TypeNode $node) use ($scope): ?Type {
+                $ignored = [];
+
+                return $this->phpDoc->convert($node, $scope, $ignored);
+            };
+            $this->phpDocTypes[$function->getDeclaringClass()->getName() . '::' . $function->getName()] = [
+                'parameters' => array_map(static fn(array $tag): ?Type => $convert($tag[1]), $paramTags),
+                'return' => $returnTag === null ? null : [$convert($returnTag[1])],
+            ];
+        }
         $throws = $this->resolveThrows($doc, $scope, "{$subject} @throws", $errors);
 
         $own = new ResolvedSignature($subject, $parameters, $return, $throws, $errors->all());
         if ($function instanceof \ReflectionMethod && !$function->getDeclaringClass()->isTrait()) {
-            $this->checkInheritance($function, array_keys($paramTags), $returnTag !== null, self::throwsTags($doc) !== [], $own, $errors);
+            $this->checkInheritance($function, array_keys($paramTags), $returnTag !== null, self::throwsTags($doc) !== [], $subject, $errors);
         }
 
         return new ResolvedSignature($subject, $parameters, $return, $throws, $errors->all());
@@ -440,9 +461,11 @@ final class TypeResolver
     /**
      * PHPStan inherits a parameter, return or `@throws` PHPDoc from an overridden, implemented or
      * abstract trait method when this method does not declare its own (parameters by position,
-     * constructor parameters by name). Stage 1 does not inherit: when an inherited declaration
-     * would change a resolved type, it is a pre-run error rather than silently ignored. An
-     * ancestor PHPDoc that only restates what this method already resolves to changes nothing.
+     * constructor parameters by name), and applies it to this method's native type
+     * (`TypehintHelper::decideType`). Stage 1 does not inherit: an inherited declaration that
+     * would change this method's type is a pre-run error ("would be inherited"), and one whose
+     * effect cannot be decided in Stage 1 is too ("may be inherited"), rather than silently
+     * ignored. One that would leave the native type unchanged is no error.
      *
      * @param list<string> $taggedParameters
      */
@@ -451,84 +474,177 @@ final class TypeResolver
         array $taggedParameters,
         bool $hasReturnTag,
         bool $hasThrows,
-        ResolvedSignature $own,
+        string $subject,
         PreRunErrors $errors,
     ): void {
-        $name = $method->getName();
-        $byName = strtolower($name) === '__construct';
+        $class = $method->getDeclaringClass()->getName();
+        $byName = strtolower($method->getName()) === '__construct';
         $seen = [];
         foreach (self::ancestorMethods($method) as $inherited) {
-            $key = $inherited->getDeclaringClass()->getName() . '::' . $inherited->getName();
-            // A method reached through several classes is one source; a trait method copied into
-            // another trait is too (same declaration). Distinct declarations are never merged.
-            $identity = $inherited->getDeclaringClass()->isTrait()
-                ? 'trait:' . $inherited->getFileName() . ':' . $inherited->getStartLine() . ':' . $inherited->getName()
-                : $key;
-            if (isset($seen[$identity])) {
+            // One declaration is one source, however many classes or traits it is reached through.
+            $origin = self::origin($inherited);
+            $key = $origin->getDeclaringClass()->getName() . '::' . $origin->getName();
+            if (isset($seen[$key])) {
                 continue;
             }
-            $seen[$identity] = true;
+            $seen[$key] = true;
 
-            $theirDoc = $this->parseDoc($inherited->getDocComment());
-            $theirTagged = [];
-            foreach (self::PARAM_TAGS as $tagName) {
-                foreach ($theirDoc->getParamTagValues($tagName) as $value) {
-                    $theirTagged[] = substr($value->parameterName, 1);
-                }
-            }
-            $theirReturnTagged = false;
-            foreach (self::RETURN_TAGS as $tagName) {
-                $theirReturnTagged = $theirReturnTagged || $theirDoc->getReturnTagValues($tagName) !== [];
-            }
-
-            $theirs = $this->resolve($inherited);
+            $this->resolve($inherited);
+            $theirs = $this->phpDocTypes[$inherited->getDeclaringClass()->getName() . '::' . $inherited->getName()];
+            $theirClass = $inherited->getDeclaringClass()->getName();
             $theirParameters = array_values($inherited->getParameters());
-            $slots = [];
+            $would = [];
+            $may = [];
             foreach ($method->getParameters() as $position => $parameter) {
                 if (in_array($parameter->getName(), $taggedParameters, true)) {
                     continue;
                 }
                 $counterpart = $byName ? $parameter->getName() : ($theirParameters[$position] ?? null)?->getName();
-                if ($counterpart === null || !in_array($counterpart, $theirTagged, true)) {
+                if ($counterpart === null || !array_key_exists($counterpart, $theirs['parameters'])) {
                     continue;
                 }
-                if (self::narrows($theirs->parameters[$counterpart] ?? null, $own->parameters[$parameter->getName()] ?? null, $inherited, $method)) {
-                    $slots[] = "parameter \${$parameter->getName()}";
-                }
+                $slot = "parameter \${$parameter->getName()}";
+                match ($this->inheritedEffect($theirs['parameters'][$counterpart], $parameter->getType(), $theirClass, $class)) {
+                    Certainty::Yes => $would[] = $slot,
+                    Certainty::Maybe => $may[] = $slot,
+                    Certainty::No => null,
+                };
             }
-            if (!$hasReturnTag && $theirReturnTagged && self::narrows($theirs->return, $own->return, $inherited, $method)) {
-                $slots[] = 'return type';
+            if (!$hasReturnTag && $theirs['return'] !== null) {
+                match ($this->inheritedEffect($theirs['return'][0], $method->getReturnType(), $theirClass, $class)) {
+                    Certainty::Yes => $would[] = 'return type',
+                    Certainty::Maybe => $may[] = 'return type',
+                    Certainty::No => null,
+                };
             }
-            if (!$hasThrows && self::throwsTags($theirDoc) !== []) {
-                $slots[] = '@throws';
+            if (!$hasThrows && self::throwsTags($this->parseDoc($inherited->getDocComment())) !== []) {
+                $would[] = '@throws';
             }
-            if ($slots !== []) {
+
+            $parts = [];
+            if ($would !== []) {
+                $parts[] = 'for ' . implode(', ', $would) . ' would be inherited';
+            }
+            if ($may !== []) {
+                $parts[] = 'for ' . implode(', ', $may) . ' may be inherited (undecidable in Stage 1)';
+            }
+            if ($parts !== []) {
                 $errors->add(
-                    $own->subject,
-                    "the PHPDoc of {$key}() for " . implode(', ', $slots)
-                        . ' would be inherited, as PHPStan does; PHPDoc inheritance is not supported in Stage 1',
+                    $subject,
+                    "the PHPDoc of {$key}() " . implode(', and ', $parts)
+                        . ', as PHPStan does; PHPDoc inheritance is not supported in Stage 1',
                 );
             }
         }
     }
 
     /**
-     * Whether an inherited slot type could change this method's: anything but an equivalent type
-     * (a restatement) is reported. The ancestor's `static` is late-bound and is compared as this
-     * method's class. An unresolvable side is always reported.
+     * Whether an inherited PHPDoc type changes this method's slot: Yes when PHPStan's
+     * `decideType` would give a type that is not equivalent to the native one, No when it keeps
+     * the native type, Maybe when a side does not resolve or a fragment outside the Stage 1 list
+     * makes it undecidable. The ancestor's `static` is late-bound to this method's class.
+     *
+     * @param class-string $ancestorClass
+     * @param class-string $class
      */
-    private static function narrows(?Type $theirs, ?Type $ours, \ReflectionMethod $ancestor, \ReflectionMethod $method): bool
+    private function inheritedEffect(?Type $phpDoc, ?\ReflectionType $nativeType, string $ancestorClass, string $class): Certainty
     {
-        if ($theirs === null || $ours === null) {
-            return true;
+        if ($phpDoc === null) {
+            return Certainty::Maybe;
         }
 
-        $theirs = self::rebaseStatic($theirs, $ancestor->getDeclaringClass()->getName(), $method->getDeclaringClass()->getName());
-        $into = Subtype::check($theirs, $ours);
+        $native = new MixedType();
+        if ($nativeType !== null) {
+            $ignored = [];
+            $native = $this->native->convert($nativeType, $class, $ignored);
+            if ($native === null) {
+                return Certainty::Maybe;
+            }
+        }
 
-        // Reported unless the two are equivalent: a child that narrows natively still gets the
-        // ancestor's PHPDoc applied by PHPStan, so "not a subtype" is no reason to stay quiet.
-        return !($into === Certainty::Yes && Subtype::check($ours, $theirs) === Certainty::Yes);
+        $decided = self::decideType($native, self::rebaseStatic($phpDoc, $ancestorClass, $class));
+        if ($decided === null) {
+            return Certainty::Maybe;
+        }
+
+        return Certainty::of(
+            !(Subtype::check($decided, $native) === Certainty::Yes && Subtype::check($native, $decided) === Certainty::Yes),
+        );
+    }
+
+    /**
+     * PHPStan's `TypehintHelper::decideType` for the Stage 1 model, or null when undecidable: null
+     * is removed from the PHPDoc type when the native type cannot be null; an explicit `never`
+     * wins; the PHPDoc type applies only when it is a subtype of the native type; then native
+     * union members disjoint from the result are added back.
+     */
+    public static function decideType(Type $native, Type $phpDoc): ?Type
+    {
+        if (Subtype::check(new NullType(), $native) === Certainty::No) {
+            $members = $phpDoc instanceof UnionType ? $phpDoc->members : [$phpDoc];
+            $members = array_values(array_filter($members, static fn(Type $m): bool => !$m instanceof NullType));
+            if ($members === []) {
+                return $native;
+            }
+            $phpDoc = UnionType::of(...$members);
+        }
+        if ($phpDoc instanceof NeverType) {
+            return $phpDoc;
+        }
+
+        $into = Subtype::check($phpDoc, $native);
+        if ($into === Certainty::Maybe) {
+            return null;
+        }
+        $result = $into === Certainty::Yes ? $phpDoc : $native;
+        if (!$native instanceof UnionType) {
+            return $result;
+        }
+
+        $added = [];
+        foreach ($native->members as $member) {
+            $disjoint = Disjoint::check($result, $member);
+            if ($disjoint === Certainty::Maybe) {
+                return null;
+            }
+            if ($disjoint === Certainty::Yes) {
+                $added[] = $member;
+            }
+        }
+
+        return $added === [] ? $result : UnionType::of($result, ...$added);
+    }
+
+    /**
+     * The declaration a method comes from: a method a class or trait takes from a used trait is
+     * that trait's (recursively). Two declarations on one line stay apart: the match also
+     * compares the docblock and the signature.
+     */
+    private static function origin(\ReflectionMethod $method): \ReflectionMethod
+    {
+        foreach ($method->getDeclaringClass()->getTraits() as $trait) {
+            if (!$trait->hasMethod($method->getName())) {
+                continue;
+            }
+            $candidate = $trait->getMethod($method->getName());
+            if ($candidate->getFileName() === $method->getFileName()
+                && $candidate->getStartLine() === $method->getStartLine()
+                && self::declarationText($candidate) === self::declarationText($method)) {
+                return self::origin($candidate);
+            }
+        }
+
+        return $method;
+    }
+
+    private static function declarationText(\ReflectionMethod $method): string
+    {
+        return $method->getDocComment() . '|'
+            . implode(',', array_map(
+                static fn(\ReflectionParameter $p): string => $p->getType() . ' $' . $p->getName(),
+                $method->getParameters(),
+            ))
+            . '|' . $method->getReturnType();
     }
 
     /**

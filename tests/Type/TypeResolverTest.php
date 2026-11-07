@@ -881,7 +881,7 @@ final class TypeResolverTest extends TestCase
             'restated union in another order' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\RestatedUnion',
                 'public function m(int|string $x): static { return $this; }', null],
             'unresolvable ancestor parameter' => ['class Target extends \\Pront\\Tests\\Type\\Fixtures\\Broken',
-                'public function m(int $x): void {}', 'Broken::m() for parameter $x would be inherited'],
+                'public function m(int $x): void {}', 'Broken::m() for parameter $x may be inherited (undecidable in Stage 1)'],
             'unresolvable ancestor @throws' => ['class Target implements \\Pront\\Tests\\Type\\Fixtures\\ThrowsBroken',
                 'public function m(): void {}', 'ThrowsBroken::m() for @throws would be inherited'],
             'concrete trait method is not a source' => ['class Target', 'use Fx\\Concrete; public function m(int $x): void {}', null],
@@ -1045,6 +1045,78 @@ final class TypeResolverTest extends TestCase
         );
 
         self::assertOneErrorContaining('J2::m() for return type would be inherited', $signature);
+    }
+
+    /**
+     * The inherited PHPDoc is applied to this method's native type as PHPStan's
+     * `TypehintHelper::decideType` does; only a changed type is reported.
+     *
+     * @return array<string, array{string, ?string}>
+     */
+    public static function inheritedOverNarrowerNative(): array
+    {
+        return [
+            'not a subtype of int: native kept' => ['public function a(): int { return 1; }', null],
+            'string|positive-int over int: native kept' => ['public function b(): int { return 1; }', null],
+            'null removed before applying' => ['public function c(): string { return \'x\'; }', 'WiderUnion::c() for return type would be inherited'],
+            'undecidable fragment' => ['public function d(): string { return \'x\'; }', 'WiderUnion::d() for return type may be inherited (undecidable in Stage 1)'],
+        ];
+    }
+
+    #[DataProvider('inheritedOverNarrowerNative')]
+    public function testInheritedPhpDocOverANarrowerNativeType(string $method, ?string $error): void
+    {
+        $name = substr($method, strlen('public function '), 1);
+        $generated = TargetFactory::method(
+            $method . ' public function m(): void {}',
+            '',
+            'class Target extends \Pront\Tests\Type\Fixtures\WiderUnion',
+        );
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod($generated->class, $name));
+
+        if ($error === null) {
+            self::assertSame([], self::messages($signature));
+        } else {
+            self::assertOneErrorContaining($error, $signature);
+        }
+    }
+
+    public function testConstructorWithAnotherNativeTypeInheritsNothing(): void
+    {
+        $method = TargetFactory::method(
+            'public function __construct(string $x) {} public function m(): void {}',
+            '',
+            'class Target extends \Pront\Tests\Type\Fixtures\CtorTyped',
+        );
+        $signature = (new TypeResolver())->resolve(new \ReflectionMethod($method->class, '__construct'));
+
+        self::assertSame([], self::messages($signature));
+    }
+
+    public function testTraitsDeclaredOnOneLineAreDistinctSources(): void
+    {
+        $traits = 'trait K1 { /** @return positive-int */ abstract public function m(int $x = 0): ?int; } '
+            . "trait K2 { /** @param positive-int \$x */ abstract public function m(int \$x = 0): ?int; }\n";
+        $signature = (new TypeResolver())->resolve(
+            TargetFactory::method('use K1, K2; public function m(int $x = 0): ?int { return null; }', $traits),
+        );
+
+        $messages = self::messages($signature);
+        self::assertCount(2, $messages, implode("\n", $messages));
+        self::assertStringContainsString('K1::m() for return type would be inherited', $messages[0]);
+        self::assertStringContainsString('K2::m() for parameter $x would be inherited', $messages[1]);
+    }
+
+    public function testTraitReachedTwiceIsOneSource(): void
+    {
+        $parent = "abstract class AbstractContracted { use \\Pront\\Tests\\Type\\Fixtures\\Contracted; }\n";
+        $signature = (new TypeResolver())->resolve(TargetFactory::method(
+            'use Fx\Contracted; public function m(int $x): void {}',
+            $parent,
+            'class Target extends AbstractContracted',
+        ));
+
+        self::assertOneErrorContaining('Contracted::m() for parameter $x would be inherited', $signature);
     }
 
     public function testDeepAncestorChainsResolveOnce(): void
