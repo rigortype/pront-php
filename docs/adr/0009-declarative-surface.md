@@ -122,8 +122,10 @@ Binding rules:
   counterexample). Shrinking an unverifiable trial accepts only candidates with
   the same failure signature (ADR-0011), but a real failure met by one of its
   candidates (a failure that is not unverifiable) is never dropped: it is
-  promoted to the target's counterexample, shrunk and reported by the normal
-  path (exit 1), and the unverifiable trial is listed beside it. The rule
+  promoted to the target's counterexample, shrunk with a fresh budget and
+  reported by the normal path (exit 1), and the unverifiable trial is listed
+  beside it with its original replay token. The first such candidate ends the
+  unverifiable trial's shrinking, so there is at most one promotion. The rule
   covers every kind of unverifiable trial, including the comparison and
   snapshot cases of ADR-0010 section 3. Stage 1 as merged still ends the
   target's trials at the first unverifiable trial; this follows in #38.
