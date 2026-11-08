@@ -358,15 +358,12 @@ final class Application
         }
         $shrink = $counterexample->shrink;
         $this->line(sprintf(
-            '  %s (shrunk in %d evaluations, %d accepted; %s):',
+            '  %s (%s; %s):',
             $unverifiable ? 'Input' : 'Counterexample',
-            $shrink->evaluations,
-            $shrink->accepted,
-            match ($shrink->stopReason) {
-                StopReason::Fixpoint => 'a local minimum',
-                StopReason::Budget => 'stopped by the evaluation budget, possibly not minimal',
-                StopReason::Time => 'stopped by the time limit, possibly not minimal',
-            },
+            $shrink->stopReason === StopReason::NotReproduced
+                ? Tally::plural($shrink->evaluations, 'evaluation')
+                : sprintf('shrunk in %s, %d accepted', Tally::plural($shrink->evaluations, 'evaluation'), $shrink->accepted),
+            self::stopReason($shrink->stopReason),
         ));
         $this->input($target, ChoiceBuffer::repairing($counterexample->buffer), $counterexample->buffer, true);
         $this->line(sprintf(
@@ -376,6 +373,20 @@ final class Application
             !$flaky ? '' : ($unverifiable ? '; not reproducible (flaky)' : '; not reproducible (flaky), still counted as a counterexample'),
         ));
         $this->line('  Replay: ' . $this->replayCommand($counterexample->token));
+    }
+
+    /**
+     * Why shrinking stopped, as the counterexample line says it; every case is named, so a budget
+     * stop or an unshrunk input is never read as a minimum (ADR-0008 scope principles).
+     */
+    public static function stopReason(StopReason $reason): string
+    {
+        return match ($reason) {
+            StopReason::Fixpoint => 'a local minimum',
+            StopReason::Budget => 'stopped by the evaluation budget, possibly not minimal',
+            StopReason::NotReproduced => 'not shrunk: replaying the failing input did not reproduce the failure, so it is the input of the failing trial',
+            StopReason::Time => 'stopped by the time limit, possibly not minimal',
+        };
     }
 
     /**
