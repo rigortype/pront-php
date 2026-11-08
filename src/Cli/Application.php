@@ -358,10 +358,11 @@ final class Application
         }
         $shrink = $counterexample->shrink;
         $this->line(sprintf(
-            '  %s (shrunk in %d evaluations, %d accepted; %s):',
+            '  %s (%s; %s):',
             $unverifiable ? 'Input' : 'Counterexample',
-            $shrink->evaluations,
-            $shrink->accepted,
+            $shrink->stopReason === StopReason::NotReproduced
+                ? Tally::plural($shrink->evaluations, 'evaluation')
+                : sprintf('shrunk in %s, %d accepted', Tally::plural($shrink->evaluations, 'evaluation'), $shrink->accepted),
             self::stopReason($shrink->stopReason),
         ));
         $this->input($target, ChoiceBuffer::repairing($counterexample->buffer), $counterexample->buffer, true);

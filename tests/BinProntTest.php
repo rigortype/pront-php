@@ -94,7 +94,7 @@ final class BinProntTest extends TestCase
             "private static int \$n = 0;\n/** @param int<0, 100> \$x */\n#[Verify(seed: 2)] public static function m(int \$x): void { if (\$x > 50 && self::\$n++ % 2 === 0) { throw new \\Error('odd'); } }",
             [],
             1,
-            ['FLAKY A::m (fresh trial ', 'not shrunk: replaying the failing input did not reproduce the failure', 'not reproducible (flaky), still counted as a counterexample.', '0 passed, 0 failed, 1 flaky'],
+            ['FLAKY A::m (fresh trial ', '  Counterexample (1 evaluation; not shrunk: replaying the failing input did not reproduce the failure', 'not reproducible (flaky), still counted as a counterexample.', '0 passed, 0 failed, 1 flaky'],
         ];
         yield 'the receiver, an enum, a string, a float and a bool are shown as drawn' => [
             'public function __construct(public int $base, public ?string $label) {} #[Verify] public function m(Suit $s, string $t, float $f, bool $b): int { return "x"; }',
