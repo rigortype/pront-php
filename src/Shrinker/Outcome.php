@@ -22,9 +22,13 @@ namespace Pront\Shrinker;
  */
 final readonly class Outcome
 {
+    /**
+     * @param ?string $reason why the input was discarded, for `OutcomeKind::Discarded`
+     */
     private function __construct(
         public OutcomeKind $kind,
         public ?string $signature,
+        public ?string $reason = null,
     ) {
     }
 
@@ -33,9 +37,12 @@ final readonly class Outcome
         return new self(OutcomeKind::Passed, null);
     }
 
-    public static function discarded(): self
+    /**
+     * @param ?string $reason why the input was discarded (a `Rejected` message), counted per reason
+     */
+    public static function discarded(?string $reason = null): self
     {
-        return new self(OutcomeKind::Discarded, null);
+        return new self(OutcomeKind::Discarded, null, $reason);
     }
 
     /**
@@ -59,10 +66,20 @@ final readonly class Outcome
      * A failure identified by the throwable's class, throw site and the frames of its stack trace
      * that are not shared with the caller's own stack (file and line of each frame; a frame without
      * a file, such as an internal call, contributes `-`). Call it where the failure is caught.
+     *
+     * `$outerFrames` first drops that many outermost frames of the throwable's stack trace, for a
+     * caller that classifies the failure deeper than where its call into user code happened (the
+     * engine classifies a destructor's throwable in a helper) and names that call itself: the
+     * frames above it are then cut whatever the caller's stack is. The shared-frame cut then
+     * applies to what is left (with frames dropped, the outermost remaining frame is no longer
+     * shared, so it cuts nothing more). With 0 only the shared-frame cut applies.
+     *
+     * @param int<0, max> $outerFrames
      */
-    public static function fromThrowable(\Throwable $failure): self
+    public static function fromThrowable(\Throwable $failure, int $outerFrames = 0): self
     {
-        $trace = array_map(self::frame(...), $failure->getTrace());
+        $trace = $failure->getTrace();
+        $trace = array_map(self::frame(...), array_slice($trace, 0, max(0, count($trace) - $outerFrames)));
         // Frame 0 is this call; the rest is the caller's stack, outermost last.
         $own = array_map(self::frame(...), array_slice(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS), 1));
         while ($trace !== [] && $own !== [] && end($trace) === end($own)) {

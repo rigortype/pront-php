@@ -19,4 +19,7 @@ final class Defaults
 
     /** The discard threshold is this factor times the iteration count. */
     public const int DISCARD_FACTOR = 10;
+
+    /** The flaky re-run count N: how often the minimal counterexample is re-run (ADR-0011 section 1). */
+    public const int FLAKY_RUNS = 5;
 }
