@@ -50,12 +50,12 @@ and makes exit code 2, or 1 if a counterexample was found (ADR-0013). _Avoid_: "
 ignored), "skip".
 
 **Failure signature** — the string that identifies a failure for "same failure": exception class,
-the site where the throwable was created and the frames up to the classifier, never the message or the input (ADR-0011).
+the site where the throwable was created and the frames up to the classifier, never the message or
+the input (ADR-0011).
 
 **Unchecked** — a return-type fragment that cannot be verified at runtime (a `--strict` item), or an
 `Exception` thrown by a method with no `@throws` (counted and listed, not a `--strict` item,
-ADR-0009 section 5); reported, never skipped
-silently (ADR-0009).
+ADR-0009 section 5); reported, never skipped silently (ADR-0009).
 
 **Skipped: unbuildable** — an implementation Pront cannot construct; listed, not failed (ADR-0012).
 

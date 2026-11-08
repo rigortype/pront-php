@@ -43,10 +43,13 @@ override in scope. PHP Attributes are not inherited, so Pront does this itself.
 - "In scope" is followed outside `paths` only through the project's
   autoloader: for a class in scope whose parent chain leaves the index, its
   first out-of-index ancestors are autoloaded; an ancestor that only a manual
-  `require` provides is not followed. A class whose chain leaves `paths`
-  through an ancestor that cannot be autoloaded (or whose autoloader throws)
-  is listed as "unverified until Stage 3" with that reason, counted on the
-  summary line, and a `--strict` item, never dropped silently. Stage 1 as
+  `require` provides is not followed. In a run with at least one contract
+  class, a class whose chain leaves `paths` through an ancestor that cannot be
+  autoloaded (or whose autoloader throws), so Pront cannot tell whether it
+  descends from a contract class, is listed in the "unverified until Stage 3"
+  category with that reason (the cause is the autoloading, not Stage 3),
+  counted on the summary line, and a `--strict` item, never dropped
+  silently. Stage 1 as
   merged does not list it yet; this follows in #44. An override made by an
   out-of-`paths` intermediate class is reported on no class; its in-scope
   subclass is only listed as "unverified until Stage 3" (below).

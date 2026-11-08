@@ -110,7 +110,7 @@ is simpler; at equal length, compare draw by draw by position in the ordering.
    position has the kind recorded there (its range changed); a slot that an edit shifted onto a draw
    of another kind is not repaired, and if it does not fit, the candidate is invalid. Repair clamps a
    slot to the nearest valid position of its draw: an int position, a length, an index, a bool, a
-   nullable flag, a selector, a character, a float `kind` above 2 (to `kind` 2 with its index
+   nullable flag, a selector, a character, the magnitude and side of a `kind` 0 float, a float `kind` above 2 (to `kind` 2 with its index
    clamped), a float edge index, and the low magnitude and sign slots of a `kind` 1 float. A `kind` 1
    high slot is never clamped (every pattern with it at its limit is non-finite), and a `kind` 1
    pattern that section 2 rejects is never repaired. Every attempt that runs a recorded buffer
@@ -130,7 +130,7 @@ without relying on the budget. Edge values take one draw (except list and array 
 `pront-2` on, section 2) and are therefore minimal by design: a
 well-known small value is simpler than a random one (ADR-0010 section 4). The selector is tried at every
 lower value, not only its neighbour. A candidate with an out-of-range slot that cannot be
-repaired is discarded.
+repaired is invalid (not a discard).
 
 ### 5. Budget
 The numeric budget (`maxShrinkSteps`, an internal constant, and the wall-time safety net) is owned by

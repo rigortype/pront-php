@@ -35,9 +35,10 @@ functions also run after `exit` and `die`.
    `#[Verify(seed:)]` when set, otherwise derived from the run seed and the target name. The stream is by a fixed derivation named by the algorithm
    identifier. Stage 1's identifier is `pront-1` (`Algorithm::ID`); it covers the trial-stream and
    target-seed derivations (SHA-256 with a domain prefix over 64-bit little-endian integers, and for
-   the target seed also the target name; used as Xoshiro256** state), Pront's range mapping, the slot encodings and orderings, the edge tables, and
-   the draw order (within one trial the receiver first, then the parameters in declaration order).
-   `k` counts from 1. Any change to one of these is an identifier bump (ADR-0011). `k` is scoped to one target, so one target's shrinking never changes another's inputs. A fresh trial is therefore regenerated from (seed, k) alone, without re-running earlier
+   the target seed also the target name; used as Xoshiro256** state), Pront's range mapping, the
+   slot encodings and orderings, the edge tables, and the draw order (within one trial the receiver first, then the parameters in declaration order).
+   `k` counts from 1. Any change to one of these is an identifier bump (ADR-0011).
+   `k` is scoped to one target, so one target's shrinking never changes another's inputs. A fresh trial is therefore regenerated from (seed, k) alone, without re-running earlier
    trials' user code.
 5. **Journal.** Each run writes its own file, `.pront/runs/<run-id>.jsonl`, and holds a `flock` on it
    for the run's life; nothing is truncated. The file is created under a hidden temporary name,

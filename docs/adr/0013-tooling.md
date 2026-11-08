@@ -28,8 +28,7 @@ counts, custom generator and comparator registration, contract registration.
 - Primary runner: the CLI `vendor/bin/pront`. A PHPUnit bridge comes later.
 - Stage 1 CLI options: `--config <file>`, `--seed <int>`, `--strict`,
   `--replay <token>`, `--version` and `--help` (also `-h`) (`--opt v` or
-  `--opt=v`). An
-  unknown option, a positional argument, a repeated option, and `--seed` with
+  `--opt=v`). An unknown option, a positional argument, a repeated option, and `--seed` with
   `--replay` are usage errors (exit 2). There is no option for iterations or
   the edge ratio; both are `#[Verify]` options (ADR-0010 section 4).
 - The report ends with a summary line that always shows the counts of skipped
