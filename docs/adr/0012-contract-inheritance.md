@@ -1,6 +1,6 @@
 # ADR-0012: Contract Inheritance (LSP Verification)
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 (Pillar 6)
 

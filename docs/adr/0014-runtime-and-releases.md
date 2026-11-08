@@ -1,6 +1,6 @@
 # ADR-0014: Runtime, Packaging, Versioning and Release Stages
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Refines: ADR-0008 (scope principles)
 

@@ -16,8 +16,7 @@ If this file disagrees with an ADR or an issue, this file is the one that is wro
 ## State at 2026-11-08
 
 - No code yet. The former PDR series is now ADR-0008..0015 (PDR-N became ADR-(N+8), `git mv`'d from
-  `docs/pdr/`; there is one series). ADR-0001 and ADR-0008..0015 are **Proposed**; ADR-0002..0007
-  (shrinker, type resolver, execution model, dependencies, packaging, edge values) are **Accepted**.
+  `docs/pdr/`; there is one series). All ADRs (0001-0015) are **Accepted**.
 - The development flow is in place (AGENTS.md, `docs/agents/`, three `pront-*` skills, Flake,
   `make verify-changed`). There is no CI and no branch protection.
 - Open backlog (GitHub issues): #1-#3 and #11 (Stage 2 ADRs), #4-#5 and #12-#13 (unscheduled ADRs),
@@ -28,7 +27,8 @@ If this file disagrees with an ADR or an issue, this file is the one that is wro
 
 ## Next
 
-1. User: ratify or amend ADR-0001, then mark ADR-0008..0015 Accepted.
-2. User: approve #7 (CI job) and #8 (branch protection); both are repository settings.
-3. Then begin Stage 1 (ADR-0014): split it into implementation issues (engine and choice buffer,
-   resolver, `#[Verify]` and discovery, CLI and exit codes), each run as a `pront-lane` lane.
+1. User: approve #7 (CI job) and #8 (branch protection); both are repository settings.
+2. Stage 1 is split into issues #15-#23 (milestone `Stage 1`, label `ready-for-agent`): #15 skeleton
+   and dependencies first (a dev test runner is an ask-first dependency), then #16 choice buffer,
+   #17 resolver, #18 generators, #19 shrinker, #20 attributes and discovery, #21 engine and journal,
+   #22 oracles, #23 CLI. Run each as a `pront-lane` lane, one at a time on shared files.
