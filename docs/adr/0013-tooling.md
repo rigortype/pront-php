@@ -35,8 +35,11 @@ counts, custom generator and comparator registration, contract registration.
   and unchecked items, reserved-name conflicts (ADR-0009) and "unverified until
   Stage 3" classes (ADR-0012), even when zero.
 - Exit codes: 0 success; 1 a counterexample was found (also when other issues
-  occurred in the same run); 2 a configuration or unresolved-generator error,
-  a runtime "unverifiable" error (a value that cannot be compared or
+  occurred in the same run, unverifiable trials included: a target with both
+  a real counterexample and unverifiable trials reports the counterexample
+  and lists the unverifiable trials, ADR-0009 section 4); 2 a configuration
+  or unresolved-generator error, a runtime "unverifiable" error with no
+  counterexample in the run (a value that cannot be compared or
   snapshotted, ADR-0010, or a `TypeError` raised while binding a value to a
   condition parameter, ADR-0009), a target that exceeded the discard threshold
   (ADR-0010 section 5), a replay error (below), a `paths` setting that matches
@@ -61,8 +64,8 @@ counts, custom generator and comparator registration, contract registration.
   prove the input is the recorded one (another draw count, a repaired slot, a
   token without a buffer), a pass carries a caveat naming why. A recorded
   buffer that no longer produces an input is a replay error (exit 2), and an
-  unverifiable replay exits 2. A counterexample that is both unverifiable and
-  flaky is reported as unverifiable (exit 2), with the flaky note. A pre-run error
+  unverifiable replay exits 2. An unverifiable result that is also flaky is
+  reported as unverifiable (exit 2), with the flaky note. A pre-run error
   aborts only its own target; the
   run continues with the other targets and exits 2 at the end (1 if any
   counterexample was found). The exception is a link-time fatal while loading

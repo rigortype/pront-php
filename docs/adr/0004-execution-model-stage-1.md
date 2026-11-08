@@ -55,8 +55,8 @@ functions also run after `exit` and `die`.
    `begin` and `end`. At run start, files not locked by a live run are rotated: the newest 20 are
    kept; only files that are `done`, already reported, or hold no attempt in flight (every `begin`
    has an `end`: a run killed between attempts, or ended by an uncaught Pront exception) are deleted.
-   (Pending the user's ratification: Stage 1 as merged deletes files with no attempt at all, but keeps
-   files whose attempts all ended; deleting those follows in #42.)
+   (Stage 1 as merged deletes files with no attempt at all, but keeps files whose attempts all ended;
+   deleting those follows in #42.)
 6. **Shutdown function.** The runner registers one shutdown function at run start. If an attempt is
    in flight (a `begin` without an `end`), it first raises the limit with
    `ini_set('memory_limit', '-1')` (so it works after memory exhaustion), then records the `fatal`

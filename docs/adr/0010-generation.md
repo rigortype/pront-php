@@ -66,10 +66,11 @@ mixed with uniform random values by default, inside the generators.
 - Only edge values inside the permitted range are candidates; out-of-range
   ones are dropped, never clamped. The range's own endpoints are edge values.
 - "Edge or uniform" is itself the first draw recorded in the choice buffer;
-  value 0 means uniform. An edge value takes one draw (except a list or array
-  length from algorithm `pront-2` on, ADR-0002 section 2) and is minimal by design
-  under the ADR's ordering; the shrinker tries every lower selector value and
-  then lowers the position. Reproducibility and shrinking are preserved (ADR-0011).
+  value 0 means uniform. Under algorithm `pront-1` an edge value takes one
+  draw and is minimal by design under the ADR's ordering; from `pront-2` on
+  the uniform draws are always recorded after the selector, so the shrinker
+  can replace an edge by a smaller uniform value (ADR-0002 section 2). The
+  shrinker tries every lower selector value and then lowers the position. Reproducibility and shrinking are preserved (ADR-0011).
 - Initial defaults (provisional; tuning owned by an ADR): iterations 100, edge
   ratio 10%, discard threshold 10x the iteration count. Iterations and ratio
   are options of `#[Verify]` (`#[Verify(iterations: 200, edgeRatio: 0.25)]`)

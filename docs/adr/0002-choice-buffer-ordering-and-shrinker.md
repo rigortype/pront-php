@@ -4,7 +4,7 @@
 - Date: 2026-11-07
 - Amended: 2026-11-08 (Stage 1 findings: float `kind` 1 rejection list, zero-filled `kind` 1
   payload, noncharacters, which values draw a selector, default maximum length, repair scope, the edge
-  ratio's float weight; the split length draw of `pront-2`)
+  ratio's float weight; the always-recorded uniform draw of `pront-2`)
 - Refines: ADR-0008 (Pillars 2, 7), ADR-0011 section 1, ADR-0010 section 4
 
 ## Context
@@ -60,18 +60,22 @@ the draw's range.
   string generator encodes it as UTF-8.
 - **length** (string, list, array): the range's minimum length is 0 in the ordering, then ascending.
   For `non-empty-*` the minimum is 1. A string length counts characters at draw time (ADR-0007).
-  From algorithm identifier `pront-2` on, the length of a list or array (the values whose edge list
-  is a list of lengths) always records two draws: its edge-or-uniform selector, then a uniform length
-  draw over the permitted range, read and recorded even when the selector picks an edge length (its
-  value is then unused). Replacing an edge length by a uniform one therefore keeps the buffer length,
-  so selector lowering, slot lowering and block deletion can reach a shorter uniform length. Under
-  `pront-1` a length at an edge (for example 16) is one draw: selector lowering reaches the lower edge
-  lengths, but never a two-draw uniform length. A string is unchanged: its selector picks an edge
-  string, and a uniform string draws its length after selector 0. This is the accepted design;
-  `pront-1` (Stage 1 as merged) draws the uniform length only after selector 0, and the
-  implementation follows in #34.
 - **edge-or-uniform selector**: the first draw of each value (ADR-0010 section 4). Slot 0 means uniform;
   slot `k > 0` selects edge candidate `k - 1` of the in-range edge list.
+  From algorithm identifier `pront-2` on, every value that has edge values always records its uniform
+  draws after the selector, also when the selector picks an edge (their value is then unused): an int
+  its (magnitude, side) draw, a bool its bool draw, a string its length draw and that many character
+  draws, a list or array its uniform length draw (the elements follow the length actually used). A
+  float is unchanged: its `kind` slot is its selector, and `kind` 2 already shrinks to a `kind` 0
+  neighbour. The shrinker gains one step (section 4): replace an edge by selector 0 with the uniform
+  draws set to the same value, where the value has a uniform encoding (invalid UTF-8 edge strings have
+  none). The value is unchanged, so the candidate still fails, and the buffer has the same length with
+  a lower selector, so it is accepted; slot lowering and block deletion then move it to a small
+  uniform value: a failing `PHP_INT_MAX` can shrink to `10`, and a list at the edge length 16 to a
+  shorter uniform length.
+  Under `pront-1` an edge is one draw and a uniform value two or more, so shortlex keeps the edge
+  (PR #28 findings 1 and 2). This is the accepted design; `pront-1` (Stage 1 as merged) draws the
+  uniform value only after selector 0, and the implementation follows in #34.
 
 ### 3. Fresh draws (mapping from the PRNG)
 Fresh values come from the PRNG (`Random\Engine\Xoshiro256StarStar`) through Pront's own mapping,
@@ -126,9 +130,11 @@ payload still makes the candidate invalid, and so does an out-of-range slot that
 clamp. Shortlex compares, and the shrinker stores, the *consumed* buffer:
 the slots the generator actually read, with zero-filled slots written out. A candidate whose consumed
 buffer is not simpler is rejected, so every accepted step strictly decreases and shrinking terminates
-without relying on the budget. Edge values take one draw (except list and array lengths from
-`pront-2` on, section 2) and are therefore minimal by design: a
-well-known small value is simpler than a random one (ADR-0010 section 4). The selector is tried at every
+without relying on the budget. Under `pront-1` edge values take one draw and are therefore minimal by
+design (a well-known small value is simpler than a random one); from `pront-2` on an edge and a
+uniform value of the same value take the same number of draws and the uniform one (selector 0) is
+simpler, so an edge that has a uniform encoding is re-encoded as uniform and shrunk further
+(section 2, ADR-0010 section 4). The selector is tried at every
 lower value, not only its neighbour. A candidate with an out-of-range slot that cannot be
 repaired is invalid (not a discard).
 
@@ -146,6 +152,7 @@ code that is already running in-process (ADR-0004). Shrinking starts as soon as 
 | Read past the end of the buffer = discard the candidate | Blocks shrinking from edge-value draws (shorter buffer) to uniform ones. |
 | Discard every out-of-range candidate | Stalls shrinking where draws depend on each other (length vs index into it). |
 | Per-type custom shrinkers | Non-goal (ADR-0008). |
+| Record the uniform draws only after selector 0 (`pront-1`) | An edge is one draw and a uniform value more, so shortlex can never move an edge to a smaller uniform value (`PHP_INT_MAX` instead of `10`, a list stuck at length 16). |
 
 ## Consequences
 
@@ -154,7 +161,3 @@ code that is already running in-process (ADR-0004). Shrinking starts as soon as 
 - The float and character orderings are conventions; changing one changes replay-token meaning and is
   an algorithm-identifier bump (ADR-0011).
 - Revisit when real-code measurements show the budget or pass order is poor.
-- The split length draw (section 2, `pront-2`) does not change the one-draw edge values of other
-  draws: a failing int edge such as `PHP_INT_MAX` is still shortlex-smaller than a two-draw uniform
-  `10`. Whether to record the uniform draw after every selector is an open question, decided with
-  ADR-0007's review point.

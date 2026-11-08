@@ -42,8 +42,12 @@ backward-compatibility promise covers only `@api`-tagged classes. In 2.3.5 `Type
    other than the literal types of the ADR-0014 list; shapes beyond the ADR-0014 list (optional keys `b?:`,
    unsealed `...`, `list{...}`).
    **Unparsable and unresolvable tags.** PHPStan drops a tag that fails to parse, of every family,
-   from type resolution (and reports invalid non-`@psalm-*` tags through a separate rule), and skips a
-   `@psalm-*` tag whose type it cannot resolve. Pront is stricter: a `@psalm-*` tag that fails to
+   from type resolution (`PhpDocNode::get*TagValues()` keeps only parsed tag values), reports invalid
+   tags other than `@psalm-*` and `@phan-*` through a separate rule, and skips a `@psalm-*` tag whose
+   type it cannot resolve (`shouldSkipType`). Verified 2026-11-08 in phpstan-src 2.3.5,
+   `src/PhpDoc/PhpDocNodeResolver.php` (`resolveParamTags`, `resolveReturnTag`, `resolveThrowsTags`,
+   `shouldSkipType`) and `src/Rules/PhpDoc/InvalidPhpDocTagValueRule.php`, and phpdoc-parser 2.3.x
+   `PhpDocNode::getParamTagValues()`. Pront is stricter: a `@psalm-*` tag that fails to
    *parse* is skipped and the previous tag applies; a tag of any other family that fails to parse is
    a pre-run error; a `@psalm-*` tag that parses but names a type Stage 1 cannot resolve is not
    skipped. Any construct Stage 1 does not support, in whichever tag wins, is a pre-run error in an
