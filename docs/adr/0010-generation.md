@@ -58,7 +58,8 @@ custom-generator registration point but no custom shrinkers.
   the trial *unverifiable*: reported as a runtime error with exit code 2
   unless a counterexample was found (ADR-0013), counted neither as a pass nor
   as a discard, never silently treated as equal, and it does not end the
-  target's trials (ADR-0009 section 4).
+  target's trials; a real counterexample, found by a later trial or while
+  shrinking it, takes precedence (ADR-0009 section 4).
 
 ## 4. Edge-value bias
 Boundary values from a fixed list (owned by an ADR; initially `0`, `-1`,

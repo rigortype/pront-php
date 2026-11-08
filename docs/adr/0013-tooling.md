@@ -36,8 +36,9 @@ counts, custom generator and comparator registration, contract registration.
   Stage 3" classes (ADR-0012), even when zero.
 - Exit codes: 0 success; 1 a counterexample was found (also when other issues
   occurred in the same run, unverifiable trials included: a target with both
-  a real counterexample and unverifiable trials reports the counterexample
-  and lists the unverifiable trials, ADR-0009 section 4); 2 a configuration
+  a real counterexample (found by a trial or while shrinking an unverifiable
+  one) and unverifiable trials reports the counterexample and lists the
+  unverifiable trials, ADR-0009 section 4); 2 a configuration
   or unresolved-generator error, a runtime "unverifiable" error with no
   counterexample in the run (a value that cannot be compared or
   snapshotted, ADR-0010, or a `TypeError` raised while binding a value to a

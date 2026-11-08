@@ -66,17 +66,21 @@ the draw's range.
   draws after the selector, also when the selector picks an edge (they are then not used to build the
   value): an int its (magnitude, side) draw, a bool its bool draw, a string its length draw and that
   many character draws, a list or array its uniform length draw (the elements follow the length
-  actually used). When the selector picks an edge, those draws are the edge value's own uniform
-  encoding where it has one: always for an int, a bool and a list or array length (their in-range
-  edges are in the uniform range), and for a string unless it is invalid UTF-8 or longer than the
-  uniform maximum length (for example the 1000-character edge, ADR-0007); an edge without one records
-  a fresh uniform value instead. Lowering the selector to 0 then keeps the value and the buffer
-  length, so the candidate still fails and is simpler, and slot lowering and block deletion move it
-  on to a small uniform value: a failing `PHP_INT_MAX` can shrink to `10`, and a list at the edge
-  length 16 to a shorter uniform length. An edge without a uniform encoding shrinks only to another
-  edge or to a different uniform value that still fails. A float is unchanged: its `kind` slot is its
-  selector, and its edges stay minimal unless an integer-valued `kind` 0 neighbour still fails
-  (`PHP_FLOAT_MAX` has none).
+  actually used). An edge value has a *uniform encoding* (the uniform draws that produce the same
+  value) always for an int, a bool and a list or array length (their in-range edges are in the
+  uniform range), and for a string unless it is invalid UTF-8 or longer than the uniform maximum
+  length in characters (code points; for example the 1000-character edge, ADR-0007, whose table entry
+  `EdgeValues::LONG_STRING_BYTES` is counted in bytes, which for `a` is the same number). The
+  shrinker's *edge re-encoding* pass (section 4) turns an edge into that encoding, after which slot
+  lowering and block deletion move it on to a small uniform value: a failing `PHP_INT_MAX` can
+  shrink to `10`, and a list at the edge length 16 to a shorter uniform length. When a fresh draw
+  picks an edge, the generator records the edge's own uniform encoding as the unused draws (a fresh
+  uniform value when it has none); for an int, a bool or a list length this is only an
+  optimisation, and for a string it makes the re-encoded candidate the same length as the recorded
+  one. An edge without a uniform encoding shrinks only to another edge or to a different uniform
+  value that still fails. A float is unchanged: its `kind` slot is its selector, and its edges stay
+  minimal unless an integer-valued `kind` 0 neighbour still fails (`PHP_FLOAT_MAX`, `INF` and
+  `-INF` have no equal-valued `kind` 0 neighbour).
   Under `pront-1` an edge is one draw and a uniform value two or more, so shortlex keeps the edge
   (PR #28 findings 1 and 2). This is the accepted design; `pront-1` (Stage 1 as merged) draws the
   uniform value only after selector 0, and the implementation follows in #34.
@@ -107,6 +111,15 @@ Passes repeat until a fixed point or the budget is spent. Every candidate is eva
 the generator on the edited buffer and re-running the property. A candidate is *accepted* only if it
 still fails and is simpler than the current buffer under **shortlex**: a shorter buffer (fewer draws)
 is simpler; at equal length, compare draw by draw by position in the ordering.
+0. **Edge re-encoding** (from `pront-2` on; first in every round): for each selector `k > 0` whose
+   edge has a uniform encoding (section 2), one candidate sets the selector to 0 and rewrites the
+   uniform draws that follow it to that encoding, computed by the shrinker from the edge value (the
+   int position, the bool, the length slot and the character positions), whatever the unused draws
+   hold (block deletion or repair may have zero-filled or shifted them). The value is unchanged, so
+   the candidate fails as before; at equal or shorter length it is simpler (lower selector). For a
+   string whose recorded unused draws are fewer characters than the edge, the candidate is longer
+   and is rejected; the generation-time encoding (section 2) avoids this for a fresh trial, and the
+   pass runs before block deletion in the first round.
 1. **Block deletion**: remove runs of 8, 4, 2 and 1 consecutive draws.
 2. **Slot lowering**: for each slot whose numeric order equals the simplicity order (an int
    `magnitude`, a length, an enum, literal or union index), binary-search toward 0 for the smallest
@@ -138,8 +151,8 @@ buffer is not simpler is rejected, so every accepted step strictly decreases and
 without relying on the budget. Under `pront-1` edge values take one draw and are therefore minimal by
 design (a well-known small value is simpler than a random one); from `pront-2` on an edge and a
 uniform value of the same value take the same number of draws and the uniform one (selector 0) is
-simpler, so an edge that has a uniform encoding becomes uniform and shrinks further (section 2,
-ADR-0010 section 4). The selector is tried at every
+simpler, so the edge re-encoding pass turns an edge that has a uniform encoding into a uniform value
+that shrinks further (section 2, ADR-0010 section 4). The selector is tried at every
 lower value, not only its neighbour. A candidate with an out-of-range slot that cannot be
 repaired is invalid (not a discard).
 

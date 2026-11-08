@@ -55,7 +55,8 @@ the input (ADR-0011).
 
 **Unverifiable** — a trial whose outcome Pront cannot decide (a `TypeError` while binding a condition
 parameter; from Stage 2 a value it cannot compare or snapshot). Counted neither as a pass nor as a
-discard, listed, and exit code 2 unless a counterexample was found (ADR-0009, ADR-0013).
+discard, listed, and exit code 2 unless a counterexample was found, including one met while shrinking
+it (ADR-0009, ADR-0013).
 
 **Unchecked** — a return-type fragment that cannot be verified at runtime (a `--strict` item), or an
 `Exception` thrown by a method with no `@throws` (counted and listed, not a `--strict` item,
