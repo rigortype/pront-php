@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Amended: 2026-11-08 (Stage 1 findings: float `kind` 1 rejection list, zero-filled `kind` 1
+  payload, noncharacters, which values draw a selector, default maximum length, repair scope, the edge
+  ratio's float weight; the split length draw of `pront-2`)
 - Refines: ADR-0008 (Pillars 2, 7), ADR-0011 section 1, ADR-0010 section 4
 
 ## Context
@@ -40,18 +43,31 @@ the draw's range.
   apply to it): `kind` 0 is a small integer value (0.0, 1.0, -1.0, 2.0, ...
   drawn as an `int` with the rule above, within +/-16 when drawn fresh); `kind` 1 is a general finite
   value as three slots (high 31 magnitude bits, low 32 magnitude bits, sign); non-finite patterns,
-  `-0.0`, and any integer-valued pattern inside the `kind` 0 range are rejected, so no value has
-  two encodings; ordered by magnitude bits ascending then positive first, so slot lowering applies to the
+  `-0.0`, any integer-valued pattern inside the `kind` 0 range ([-2^53, 2^53], where every integer is an
+  exact float), and the bit pattern of every edge-table entry (`PHP_FLOAT_EPSILON`, `PHP_FLOAT_MIN`,
+  `PHP_FLOAT_MAX` are finite, so they would otherwise be both `kind` 1 and `kind` 2) are rejected, so no
+  value has two encodings; ordered by magnitude bits ascending then positive first, so slot lowering applies to the
   first two slots. `kind` 2 indexes the float edge table of ADR-0007 section 1 (the only table; this
   ADR keeps no copy). `NAN` and `INF` occur only through `kind` 2, and each value has exactly one
   encoding: `0.0` is `[0, 0, 0]`, `1.0` is `[0, 1, 0]` (kind, magnitude, side), `NAN` is `[2, 1]`. Simplest is 0.0. A shrink candidate may replace a `kind` 1 or 2 value by an
   integer-valued `kind` 0 neighbour (for example the truncated value).
 - **bool**: `false` is 0. **enum, literal, union branch**: declaration order; the first is 0.
-  **nullable**: `null` is 0.
+  **nullable**: `null` is 0. A bool draws a selector first (both values are edges, ADR-0007); an enum,
+  a literal, a union branch and an array shape draw none (they have no edge list; a union member draws
+  its own type's selector).
 - **character** (for strings): the order is `a`-`z`, `A`-`Z`, `0`-`9`, space, ASCII punctuation, then
-  the remaining Unicode scalar values by code point. Simplest is `a`.
+  the remaining Unicode scalar values by code point. Simplest is `a`. The draw yields a code point; the
+  string generator encodes it as UTF-8.
 - **length** (string, list, array): the range's minimum length is 0 in the ordering, then ascending.
   For `non-empty-*` the minimum is 1. A string length counts characters at draw time (ADR-0007).
+  From algorithm identifier `pront-2` on, a length always records two draws: its edge-or-uniform
+  selector, then a uniform length draw over the permitted range, read and recorded even when the
+  selector picks an edge length (its value is then unused). Replacing an edge length by a uniform one
+  therefore keeps the buffer length, so selector lowering, slot lowering and block deletion can reach
+  a shorter uniform length (under `pront-1` a length at an edge, for example 16, is one draw and can
+  never become a two-draw uniform length, so shrinking stops there). This is the accepted design;
+  `pront-1` (Stage 1 as merged) draws the uniform length only after selector 0, and the
+  implementation follows in #34.
 - **edge-or-uniform selector**: the first draw of each value (ADR-0010 section 4). Slot 0 means uniform;
   slot `k > 0` selects edge candidate `k - 1` of the in-range edge list.
 
@@ -61,17 +77,20 @@ never `Randomizer`. The requirement is that every permitted value of a bounded d
 without modulo bias (rejection sampling on the 64-bit output; a full-width range uses the raw output
 as an unsigned value). The following are provisional weights, reviewed with ADR-0007's defaults:
 - **int**: uniform over the permitted values, then encoded as (magnitude, side).
-- **float**: `kind` 0 with probability 20%, `kind` 1 with 70% (a uniformly random 64-bit pattern,
-  redrawn while it is NaN or infinite), `kind` 2 with 10% (the edge ratio).
+- **float**: `kind` 2 with the probability of the edge ratio (10% by default, ADR-0007), which is
+  how the ratio reaches floats; `kind` 0 and `kind` 1 share the rest 20:70 (a `kind` 1 draw is a
+  uniformly random 64-bit pattern, redrawn while it is rejected by section 2).
 - **character**: disjoint classes with weights, uniform within a class: printable ASCII
   (U+0020-U+007E) 70%; the rest of the BMP (U+00A0-U+FFFF without surrogates, the control and the
   combining class) 15%; supplementary planes (U+10000-U+10FFFF without noncharacters) 10%;
   control (U+0000-U+001F, U+007F-U+009F) and combining 5%. The combining class takes precedence over the others (its characters are excluded from them),
-  noncharacters (U+FDD0-U+FDEF, U+FFFE, U+FFFF) are excluded from every class, and it is the fixed table
+  all 66 Unicode noncharacters (U+FDD0-U+FDEF, and U+nFFFE and U+nFFFF in each of the 17 planes) are
+  excluded from every class (the character ordering still covers them, so a replayed or shrunk buffer
+  may hold one), and the combining class is the fixed table
   U+0300-U+036F, U+3099-U+309A, U+200D, U+FE00-U+FE0F, U+E0100-U+E01EF; it does not use `IntlChar`,
   so the mapping is the same with or without `ext-intl`.
-- **length**: uniform over the permitted range; when the type states no maximum, the maximum is 16
-  elements or characters.
+- **length**: uniform over the permitted range; when the type states no maximum, the maximum is
+  `max(16, minimum)` elements or characters, so a type whose minimum exceeds 16 is still generatable.
 
 ### 4. Shrinker
 Passes repeat until a fixed point or the budget is spent. Every candidate is evaluated by re-running
@@ -85,10 +104,18 @@ is simpler; at equal length, compare draw by draw by position in the ordering.
    neighbouring simpler values, never binary-searched.
 3. **Repaired joint edit**: lowering a length draw changes the ranges of dependent draws; a later slot
    that no longer fits is clamped to its new range and the candidate is re-run. A repaired candidate
-   is kept only if it still fails (ADR-0011 section 1).
+   is kept only if it still fails (ADR-0011 section 1). Repair applies only when the draw read at a
+   position has the kind recorded there (its range changed); a slot that an edit shifted onto a draw
+   of another kind is not repaired, and if it does not fit, the candidate is invalid. A `kind` 1 float
+   pattern that section 2 rejects is never repaired. Only a shrink candidate's replay, and a replay
+   token that carries a buffer (ADR-0011), repair (`ChoiceBuffer::repairing`); a plain replay of a
+   recorded buffer never repairs and throws on an out-of-range slot.
 
 When the generator reads past the end of the buffer, the missing slots read as 0 (the simplest value),
-not as a failure of the candidate. Shortlex compares, and the shrinker stores, the *consumed* buffer:
+not as a failure of the candidate. A float whose `kind` 1 payload is invalid only because at least one
+of its slots was read past the end (the all-zero payload is the pattern of `0.0`, which `kind` 1
+rejects) decodes as the all-zero draw `0.0` and is recorded as `[0, 0, 0]`; a fully recorded invalid
+payload, or an out-of-range slot, still makes the candidate invalid. Shortlex compares, and the shrinker stores, the *consumed* buffer:
 the slots the generator actually read, with zero-filled slots written out. A candidate whose consumed
 buffer is not simpler is rejected, so every accepted step strictly decreases and shrinking terminates
 without relying on the budget. Edge values take one draw and are therefore minimal by design: a
@@ -118,3 +145,7 @@ code that is already running in-process (ADR-0004). Shrinking starts as soon as 
 - The float and character orderings are conventions; changing one changes replay-token meaning and is
   an algorithm-identifier bump (ADR-0011).
 - Revisit when real-code measurements show the budget or pass order is poor.
+- The split length draw (section 2, `pront-2`) does not change the one-draw edge values of other
+  draws: a failing int edge such as `PHP_INT_MAX` is still shortlex-smaller than a two-draw uniform
+  `10`. Whether to record the uniform draw after every selector is an open question, decided with
+  ADR-0007's review point.

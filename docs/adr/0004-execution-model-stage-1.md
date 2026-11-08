@@ -2,6 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Amended: 2026-11-08 (Stage 1 findings: algorithm identifier `pront-1`, journal creation and
+  rotation, recovery of fatals without `reported`, link-time fatals during discovery, freeing limits,
+  fresh-buffer `InvalidChoice`)
 - Refines: ADR-0011 section 2, ADR-0013 section 3, ADR-0014 section 3 (Stage 1)
 
 ## Context
@@ -30,32 +33,50 @@ functions also run after `exit` and `die`.
    included; shrink candidates and flaky re-runs do not consume `k`, they carry their recorded buffer)
    has its own PRNG stream, seeded from the target's seed and `k`. The target's seed is
    `#[Verify(seed:)]` when set, otherwise derived from the run seed and the target name. The stream is by a fixed derivation named by the algorithm
-   identifier. `k` is scoped to one target, so one target's shrinking never changes another's inputs. A fresh trial is therefore regenerated from (seed, k) alone, without re-running earlier
+   identifier. Stage 1's identifier is `pront-1` (`Algorithm::ID`); it covers the trial-stream and
+   target-seed derivations (SHA-256 with a domain prefix over 64-bit little-endian integers, used as
+   Xoshiro256** state), Pront's range mapping, the slot encodings and orderings, the edge tables, and
+   the draw order (within one trial the receiver first, then the parameters in declaration order).
+   `k` counts from 1. Any change to one of these is an identifier bump (ADR-0011). `k` is scoped to one target, so one target's shrinking never changes another's inputs. A fresh trial is therefore regenerated from (seed, k) alone, without re-running earlier
    trials' user code.
 5. **Journal.** Each run writes its own file, `.pront/runs/<run-id>.jsonl`, and holds a `flock` on it
-   for the run's life; nothing is truncated. Records are appended and flushed:
+   for the run's life; nothing is truncated. The file is created under a hidden temporary name,
+   locked, and only then renamed into place, so no other run sees it unlocked. Records are appended and flushed:
    - `begin`: written **before any user code runs for that attempt**, including the constructors and
      destructors reached while generating the input. It holds the target, the seed, `k` and the full
      choice buffer when the attempt is a shrink candidate or a flaky re-run.
    - `end`: written when the attempt, including the release of its input, has finished.
    - `fatal`: written best-effort by the shutdown function (below).
+   - `reported`: the file's unfinished attempt has been reported, by its own run's shutdown function
+     or by a later run's recovery (item 8).
    - `done`: written when the run finishes normally.
    Every candidate evaluation of the shrinker and every flaky re-run is an attempt with its own
    `begin` and `end`. At run start, files not locked by a live run are rotated: the newest 20 are
-   kept; only files that are `done`, already reported, or hold no attempt are deleted.
+   kept; only files that are `done`, already reported, or hold no attempt in flight (every `begin`
+   has an `end`: a run killed between attempts, or ended by an uncaught Pront exception) are deleted.
+   (Stage 1 as merged keeps the last kind; deleting it follows in #42.)
 6. **Shutdown function.** The runner registers one shutdown function at run start. If an attempt is
    in flight (a `begin` without an `end`), it first raises the limit with
    `ini_set('memory_limit', '-1')` (so it works after memory exhaustion), then records the `fatal`
    record, using `error_get_last()` only for a fatal-type error (the runner calls `error_clear_last()`
-   before each attempt), writes the replay token and the message to STDERR, and ends the process with
-   exit code **1**. This covers memory and time-limit fatals (PHP would otherwise exit with 255).
+   before each attempt), writes the replay token and the message to STDERR, writes `reported`, and
+   ends the process with exit code **1** (also when a journal write failed; it then names the failed
+   write on STDERR). This covers memory and time-limit fatals (PHP would otherwise exit with 255).
 7. **Undefined behaviour.** Code under test that ends the process (`exit`, `die`), registers its own
    shutdown functions, or lives in a function or method declared `never` is outside the contract:
    the result is undefined (it may report a pass, a crash or nothing). Pront does not try to detect
    it. Destructors of objects retained by static state also run after every shutdown function.
-8. **Crash recovery.** At run start, Pront scans only run files not locked by a live run. A `begin`
-   without an `end` or a `fatal` is printed once with its replay token and then marked `reported`
-   while holding the file's lock, so two runs starting together do not both print it (a crash that its own run already reported with exit 1 is not printed again). Nothing is re-run
+   A link-time fatal while discovery loads project classes (for example an incompatible override)
+   cannot be recovered in-process: a shutdown function names the file on STDERR and ends the run with
+   exit code 2. It is outside ADR-0013's rule that a pre-run error aborts only its own target, and
+   the other targets of the run are not verified.
+8. **Crash recovery.** At run start, Pront scans only run files not locked by a live run that are
+   neither `done` nor `reported`. In such a file every attempt with a `begin` and no `end` is printed
+   once with its replay token (format: ADR-0011), and with its `fatal` message when the file holds one
+   (a `fatal` without `reported` means its run's shutdown function died before it finished
+   reporting, so the user may never have seen the token); the file is then marked `reported` while holding
+   its lock, so two runs starting together do not both print it (a crash that its own run already
+   reported with exit 1 is not printed again). Nothing is re-run
    automatically. `--replay <token>` re-runs it. A process killed by SIGKILL or SIGTERM (a CI
    timeout) leaves only the `begin` record, which is enough. Signal handlers are not a Stage 1
    feature.
@@ -70,6 +91,13 @@ functions also run after `exit` and `die`.
    `dataProvider` yields the discovered targets (`yield from`), and whose test body calls the
    engine's verify-and-shrink loop for that target. A `dataProvider` alone cannot shrink, because it
    only supplies inputs and PHPUnit runs each test once. ADR-0014 lists it under "Later".
+12. **Freeing the input and Pront bugs.** Every throwable the engine catches, a partly generated
+   receiver and the released input are freed inside the attempt; a throwable raised while freeing
+   fails the attempt unless it already failed, and is freed in turn. After `Engine::DROP_LIMIT` (100)
+   consecutive frees that throw, the attempt fails with that reason (such code never terminates
+   cleanly; the report and `done` are written first). An `InvalidChoice` on a fresh buffer is a Pront
+   bug: the attempt's `end` is written and the exception is rethrown after the attempt ends, even
+   when a throwing destructor turned the attempt into a user failure.
 
 ## Alternatives rejected
 

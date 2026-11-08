@@ -43,6 +43,14 @@ by default with uniform random values (ADR-0010).
 Counted; too many is a configuration error. An implementation's `Assume` rejecting an input the
 parent contract allows is a *violation*, not a discard (ADR-0012).
 
+**Pre-run error** — a problem found before any trial runs (an unsupported or contradictory type, a
+condition that cannot bind, a misplaced Attribute, an ungeneratable input). Every one is collected and
+listed; it aborts only its own target (a link-time fatal while loading ends the run, ADR-0004 item 7) and makes exit code 2 (ADR-0013). _Avoid_: "warning" (it is never
+ignored), "skip".
+
+**Failure signature** — the string that identifies a failure for "same failure": exception class,
+throw site and the frames up to the classifier, never the message or the input (ADR-0011).
+
 **Unchecked** — a return-type fragment that cannot be verified at runtime; reported, never skipped
 silently (ADR-0009).
 

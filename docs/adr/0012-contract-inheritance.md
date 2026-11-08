@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Amended: 2026-11-08 (Stage 1 finding: how class chains outside `paths` are followed)
 - Refines: ADR-0008 (Pillar 6)
 
 Contracts on interfaces and parent methods apply to every implementation or
@@ -39,6 +40,13 @@ override in scope. PHP Attributes are not inherited, so Pront does this itself.
   with no contract (for example `__toString` or `count`) is unaffected. A
   `#[Verify]` that matches zero targets (for example an interface with no
   implementation in scope) is a pre-run error.
+- "In scope" is followed outside `paths` only through the project's
+  autoloader: for a class in scope whose parent chain leaves the index, its
+  first out-of-index ancestors are autoloaded (an ancestor that only a manual
+  `require` provides is not followed, and one that cannot be loaded is not
+  reported, since the class can then never be declared). An override made by
+  such an out-of-`paths` intermediate class is reported on no class; its
+  in-scope subclass is only listed as "unverified until Stage 3" (below).
 - Some uses cannot be seen statically before Stage 3 (for example a subclass
   that changes behaviour only through a method the verified method calls).
   Every class in scope that extends, directly or transitively, a class
