@@ -394,7 +394,8 @@ final class EngineTest extends TestCase
     public static function inputLifetimes(): iterable
     {
         yield 'fresh trials' => ['', 3, null, false];
-        yield 'a fresh trial, then flaky re-runs' => ['throw new \\DomainException();', 6, null, false];
+        // The shrinker's first evaluation replays the failing buffer itself (one shrink attempt).
+        yield 'a fresh trial, its shrink replay, then flaky re-runs' => ['throw new \\DomainException();', 7, null, false];
         // The Rejected's trace holds the input; it must not outlive the attempt.
         yield 'discards' => ['', 31, static fn(Target $t, Input $in): Outcome => throw new Rejected('never'), false];
         // Only the cycle collector frees an input in a reference cycle.
@@ -460,7 +461,7 @@ final class EngineTest extends TestCase
         self::assertSame(1, $report->trials);
         self::assertStringStartsWith($exception . '@', (string) $report->counterexample?->failure->signature);
         self::assertSame(5, $report->counterexample->reproduced, 'the release fails the same way on every path');
-        self::assertSame(['fresh' => 1, 'flaky' => 5], self::attemptCounts($journal));
+        self::assertSame(['fresh' => 1, 'shrink' => 1, 'flaky' => 5], self::attemptCounts($journal), 'the shrinker replays the failing buffer once');
     }
 
     /**

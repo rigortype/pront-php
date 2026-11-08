@@ -265,7 +265,7 @@ final class Engine
             }
         };
         $shrinker = new Shrinker($this->maxShrinkEvaluations, $this->maxShrinkSeconds, $observer, $this->clock);
-        $shrink = $shrinker->shrink($failing, $failure, fn(ChoiceBuffer $buffer): Outcome => $this->attempt($target, $seed, $k, $buffer));
+        $shrink = $shrinker->shrink($failing, fn(ChoiceBuffer $buffer): Outcome => $this->attempt($target, $seed, $k, $buffer), $failure);
 
         $reproduced = 0;
         for ($run = 0; $run < $this->flakyRuns; $run++) {

@@ -183,6 +183,12 @@ final class ChoiceBufferTest extends TestCase
             (float) FloatCodec::KIND0_LIMIT,
             [0, FloatCodec::KIND0_LIMIT, 0],
         ];
+        yield 'float kind 1 low past range' => [
+            [new Draw(DrawKind::Float, [1, 0x40091EB8, 0x100000000, 0])],
+            static fn(ChoiceBuffer $b) => $b->drawFloat(),
+            FloatCodec::fromBits((0x40091EB8 << 32) | 0xFFFFFFFF),
+            [1, 0x40091EB8, 0xFFFFFFFF, 0],
+        ];
         yield 'float kind 1 sign 2' => [
             [new Draw(DrawKind::Float, [1, 0x40091EB8, 0x51EB851F, 2])],
             static fn(ChoiceBuffer $b) => $b->drawFloat(),
