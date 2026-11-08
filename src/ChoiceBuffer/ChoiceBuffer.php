@@ -28,6 +28,9 @@ final class ChoiceBuffer
     /** @var list<int<0, max>> slots read by the draw in progress */
     private array $current = [];
 
+    /** Number of slots read past the end of the recording so far. */
+    private int $zeroFilled = 0;
+
     /** @var list<int>|null fresh slots of the draw in progress */
     private ?array $fresh = null;
 
@@ -83,14 +86,20 @@ final class ChoiceBuffer
     }
 
     /**
-     * A `float`, including `NAN`, `INF` and `-0.0` through the edge table (`FloatCodec`).
+     * A `float`, including `NAN`, `INF` and `-0.0` through the edge table (`FloatCodec`). Fresh, the
+     * edge table (kind 2) is chosen with probability `$edgeRatio`.
+     *
+     * A kind 1 payload that is not a valid pattern because some of its slots were read past the end
+     * of the recording (zero-filled) decodes as the all-zero draw, `0.0` recorded as `[0, 0, 0]`:
+     * reading past the end is never a failure of the candidate (ADR-0002 section 4). A fully
+     * recorded invalid payload still throws `InvalidChoice`.
      */
-    public function drawFloat(): float
+    public function drawFloat(float $edgeRatio = FloatCodec::DEFAULT_EDGE_RATIO): float
     {
-        $this->begin($this->floats->freshSlots(...));
+        $this->begin(fn(Prng $prng): array => $this->floats->freshSlots($prng, $edgeRatio));
         $value = match ($kind = $this->slot()) {
             0 => $this->floats->kindZero($this->slot(), $this->slot()),
-            1 => $this->floats->kindOne($this->slot(), $this->slot(), $this->slot()),
+            1 => $this->kindOne(),
             2 => $this->floats->kindTwo($this->slot()),
             default => throw new InvalidChoice("float kind slot {$kind} is not 0, 1 or 2"),
         };
@@ -140,12 +149,13 @@ final class ChoiceBuffer
     }
 
     /**
-     * A length in [`$min`, `$max`], `$max` defaulting to `DEFAULT_MAX_LENGTH`; the slot is
-     * `length - min`.
+     * A length in [`$min`, `$max`]; the slot is `length - min`. With no `$max` the maximum is
+     * `DEFAULT_MAX_LENGTH`, or `$min` when that is larger, so a type whose minimum length exceeds
+     * the default stays generatable.
      */
     public function drawLength(int $min, ?int $max = null): int
     {
-        $max ??= self::DEFAULT_MAX_LENGTH;
+        $max ??= max(self::DEFAULT_MAX_LENGTH, $min);
         if ($min < 0 || $max < $min) {
             throw new \InvalidArgumentException("Invalid length range [{$min}, {$max}]");
         }
@@ -200,6 +210,25 @@ final class ChoiceBuffer
     }
 
     /**
+     * The kind 1 payload of the float draw in progress (see `drawFloat()`).
+     */
+    private function kindOne(): float
+    {
+        $zeroFilledBefore = $this->zeroFilled;
+        [$high, $low, $sign] = [$this->slot(), $this->slot(), $this->slot()];
+        if ($this->zeroFilled > $zeroFilledBefore
+            && $high <= 0x7FFFFFFF && $low <= 0xFFFFFFFF && $sign <= 1
+            && !$this->floats->isKindOnePattern(($high << 32) | $low | ($sign << 63))
+        ) {
+            $this->current = [0, 0, 0];
+
+            return $this->floats->kindZero(0, 0);
+        }
+
+        return $this->floats->kindOne($high, $low, $sign);
+    }
+
+    /**
      * A single-slot draw over [0, `$maxPosition`] whose position is the value. An inclusive maximum,
      * so a length range up to `PHP_INT_MAX` does not overflow.
      *
@@ -240,7 +269,11 @@ final class ChoiceBuffer
                 throw new \LogicException('A fresh draw made a negative slot');
             }
         } else {
-            $value = $this->recorded[count($this->consumed)][$index] ?? 0;
+            $value = $this->recorded[count($this->consumed)][$index] ?? null;
+            if ($value === null) {
+                $value = 0;
+                $this->zeroFilled++;
+            }
         }
         $this->current[] = $value;
 
