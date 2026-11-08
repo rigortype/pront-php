@@ -43,9 +43,9 @@ contributor count justify it).
    converging; if not, the PR stays Draft and the user decides. A narrow severe finding with a
    conservative fix (says less, checks more) lands only after one fix-only delta check finds nothing
    severe.
-6. **Merge** when all of these hold: `make verify-changed` passes on the head commit (there is no CI
-   yet; when a CI job exists, it must be green on that commit instead or as well); the review has
-   stopped with **no unresolved severe finding**; and the landing point is settled (a
+6. **Merge** when all of these hold: `make verify-changed REQUIRE_TESTS=1` passes on the head commit
+   after `make setup`, so the tests ran (there is no CI yet; when a CI job exists, it must be green
+   on that commit instead or as well); the review has stopped with **no unresolved severe finding**; and the landing point is settled (a
    `ready-for-agent` issue, a user request that states the outcome, or every decision in the PR made
    under "Decisions" below). Bind the merge to the head you are merging: `gh pr ready`, then `gh pr
    merge --squash --match-head-commit <head sha>`. That head is the commit the reviewer reviewed,

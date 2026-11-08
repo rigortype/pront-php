@@ -35,7 +35,9 @@ flow. Give any command an agent runs stdin from
 
 ## Validation
 
-- Before pushing: `make verify-changed` (whitespace and `make docs-check`; it grows with the code).
+- Before pushing: `make verify-changed` (whitespace, `make docs-check`, and `make test` once `make
+  setup` has installed PHPUnit; without it the skipped tests are reported, and `REQUIRE_TESTS=1`
+  makes that a failure). It grows with the code.
 - A direct push to `master` (a typo-class fix, or replacing `docs/CURRENT_WORK.md`; see the
   contribution flow for what qualifies) must pass `make verify-changed` first.
 - Fix the cause of a failing gate instead of weakening it.

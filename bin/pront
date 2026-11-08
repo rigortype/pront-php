@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Stub of the Stage 1 runner (ADR-0014 section 3). It verifies nothing yet, so it never exits 0:
+// exit 2 is the "nothing was verified" class of ADR-0013.
+
+// Composer 2.2+ sets $_composer_autoload_path in its bin proxy; the fallback is this repository's
+// own checkout.
+require $GLOBALS['_composer_autoload_path'] ?? dirname(__DIR__) . '/vendor/autoload.php';
+
+fwrite(STDERR, sprintf(
+    "Pront %s\nUsage: vendor/bin/pront\n\nThe runner is not implemented yet; nothing was verified.\n",
+    Pront\Version::ID,
+));
+exit(2);
