@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-07
 - Amended: 2026-11-08 (Stage 1 findings: Attribute placement errors, reserved prefixed names, the
-  "cannot accept" check, "unverifiable", the return oracle's acceptance, unchecked exceptions; open
+  "cannot accept" check, "unverifiable", the return oracle's acceptance, unchecked exceptions;
   by-reference target parameters are a Stage 1 pre-run error; an unverifiable trial does not end the
   target's trials)
 - Refines: ADR-0008 (Pillars 1, 3, 5)
@@ -118,7 +118,11 @@ Binding rules:
   it is the one shrunk and reported, and the unverifiable trials are listed
   beside it (exit 1, ADR-0013). Only when the target's trials found no real
   counterexample is the target reported unverifiable (its first unverifiable
-  trial shrunk and reported, exit 2). Stage 1 as merged still ends the
+  trial shrunk and reported, exit 2 unless another target found a
+  counterexample). Shrinking an unverifiable trial accepts only candidates with
+  the same failure signature (ADR-0011), so a candidate that turns into a real
+  counterexample is not accepted. The rule covers every kind of unverifiable
+  trial, including the comparison and snapshot cases of ADR-0010 section 3. Stage 1 as merged still ends the
   target's trials at the first unverifiable trial; this follows in #38.
 - Conditions bind the generated argument values, before the call. A target
   parameter passed by reference is a pre-run error in Stage 1 (a condition

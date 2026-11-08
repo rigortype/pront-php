@@ -46,7 +46,7 @@ backward-compatibility promise covers only `@api`-tagged classes. In 2.3.5 `Type
    tags other than `@psalm-*` and `@phan-*` through a separate rule, and skips a `@psalm-*` tag whose
    type it cannot resolve (`shouldSkipType`). Verified 2026-11-08 in phpstan-src 2.3.5,
    `src/PhpDoc/PhpDocNodeResolver.php` (`resolveParamTags`, `resolveReturnTag`, `resolveThrowsTags`,
-   `shouldSkipType`) and `src/Rules/PhpDoc/InvalidPhpDocTagValueRule.php`, and phpdoc-parser 2.3.x
+   `shouldSkipType`) and `src/Rules/PhpDoc/InvalidPhpDocTagValueRule.php`, and phpdoc-parser 2.4.1
    `PhpDocNode::getParamTagValues()`. Pront is stricter: a `@psalm-*` tag that fails to
    *parse* is skipped and the previous tag applies; a tag of any other family that fails to parse is
    a pre-run error; a `@psalm-*` tag that parses but names a type Stage 1 cannot resolve is not

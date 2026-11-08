@@ -65,7 +65,8 @@ counts, custom generator and comparator registration, contract registration.
   token without a buffer), a pass carries a caveat naming why. A recorded
   buffer that no longer produces an input is a replay error (exit 2), and an
   unverifiable replay exits 2. An unverifiable result that is also flaky is
-  reported as unverifiable (exit 2), with the flaky note. A pre-run error
+  reported as unverifiable, with the flaky note (exit 2 unless the run found a
+  counterexample). A pre-run error
   aborts only its own target; the
   run continues with the other targets and exits 2 at the end (1 if any
   counterexample was found). The exception is a link-time fatal while loading

@@ -63,16 +63,20 @@ the draw's range.
 - **edge-or-uniform selector**: the first draw of each value (ADR-0010 section 4). Slot 0 means uniform;
   slot `k > 0` selects edge candidate `k - 1` of the in-range edge list.
   From algorithm identifier `pront-2` on, every value that has edge values always records its uniform
-  draws after the selector, also when the selector picks an edge (their value is then unused): an int
-  its (magnitude, side) draw, a bool its bool draw, a string its length draw and that many character
-  draws, a list or array its uniform length draw (the elements follow the length actually used). A
-  float is unchanged: its `kind` slot is its selector, and `kind` 2 already shrinks to a `kind` 0
-  neighbour. The shrinker gains one step (section 4): replace an edge by selector 0 with the uniform
-  draws set to the same value, where the value has a uniform encoding (invalid UTF-8 edge strings have
-  none). The value is unchanged, so the candidate still fails, and the buffer has the same length with
-  a lower selector, so it is accepted; slot lowering and block deletion then move it to a small
-  uniform value: a failing `PHP_INT_MAX` can shrink to `10`, and a list at the edge length 16 to a
-  shorter uniform length.
+  draws after the selector, also when the selector picks an edge (they are then not used to build the
+  value): an int its (magnitude, side) draw, a bool its bool draw, a string its length draw and that
+  many character draws, a list or array its uniform length draw (the elements follow the length
+  actually used). When the selector picks an edge, those draws are the edge value's own uniform
+  encoding where it has one: always for an int, a bool and a list or array length (their in-range
+  edges are in the uniform range), and for a string unless it is invalid UTF-8 or longer than the
+  uniform maximum length (for example the 1000-character edge, ADR-0007); an edge without one records
+  a fresh uniform value instead. Lowering the selector to 0 then keeps the value and the buffer
+  length, so the candidate still fails and is simpler, and slot lowering and block deletion move it
+  on to a small uniform value: a failing `PHP_INT_MAX` can shrink to `10`, and a list at the edge
+  length 16 to a shorter uniform length. An edge without a uniform encoding shrinks only to another
+  edge or to a different uniform value that still fails. A float is unchanged: its `kind` slot is its
+  selector, and its edges stay minimal unless an integer-valued `kind` 0 neighbour still fails
+  (`PHP_FLOAT_MAX` has none).
   Under `pront-1` an edge is one draw and a uniform value two or more, so shortlex keeps the edge
   (PR #28 findings 1 and 2). This is the accepted design; `pront-1` (Stage 1 as merged) draws the
   uniform value only after selector 0, and the implementation follows in #34.
@@ -106,16 +110,17 @@ is simpler; at equal length, compare draw by draw by position in the ordering.
 1. **Block deletion**: remove runs of 8, 4, 2 and 1 consecutive draws.
 2. **Slot lowering**: for each slot whose numeric order equals the simplicity order (an int
    `magnitude`, a length, an enum, literal or union index), binary-search toward 0 for the smallest
-   value that still fails. Other slots (`side`, float `kind`, the selector) are only tried at their
-   neighbouring simpler values, never binary-searched.
+   value that still fails. Other slots (`side`, float `kind`) are only tried at their neighbouring
+   simpler values, never binary-searched; the selector is tried at every lower value. Slots are
+   lowered in buffer order, so a selector is lowered before the uniform draws that follow it.
 3. **Repaired joint edit**: lowering a length draw changes the ranges of dependent draws; a later slot
    that no longer fits is clamped to its new range and the candidate is re-run. A repaired candidate
    is kept only if it still fails (ADR-0011 section 1). Repair applies only when the draw read at a
    position has the kind recorded there (its range changed); a slot that an edit shifted onto a draw
    of another kind is not repaired, and if it does not fit, the candidate is invalid. Repair clamps a
    slot to the nearest valid position of its draw: an int position, a length, an index, a bool, a
-   nullable flag, a selector, a character, the magnitude and side of a `kind` 0 float, a float `kind` above 2 (to `kind` 2 with its index
-   clamped), a float edge index, and the low magnitude and sign slots of a `kind` 1 float. A `kind` 1
+   nullable flag, a selector, a character, the magnitude and side of a `kind` 0 float, a float `kind`
+   above 2 (to `kind` 2 with its index clamped), a float edge index, and the low magnitude and sign slots of a `kind` 1 float. A `kind` 1
    high slot is never clamped (every pattern with it at its limit is non-finite), and a `kind` 1
    pattern that section 2 rejects is never repaired. Every attempt that runs a recorded buffer
    repairs (`ChoiceBuffer::repairing`): a shrink candidate, a flaky re-run, a replay token that
@@ -133,8 +138,8 @@ buffer is not simpler is rejected, so every accepted step strictly decreases and
 without relying on the budget. Under `pront-1` edge values take one draw and are therefore minimal by
 design (a well-known small value is simpler than a random one); from `pront-2` on an edge and a
 uniform value of the same value take the same number of draws and the uniform one (selector 0) is
-simpler, so an edge that has a uniform encoding is re-encoded as uniform and shrunk further
-(section 2, ADR-0010 section 4). The selector is tried at every
+simpler, so an edge that has a uniform encoding becomes uniform and shrinks further (section 2,
+ADR-0010 section 4). The selector is tried at every
 lower value, not only its neighbour. A candidate with an out-of-range slot that cannot be
 repaired is invalid (not a discard).
 
