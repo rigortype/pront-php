@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Amended: 2026-11-08 (Stage 1 findings: `$this` and `object` returns are unchecked; which
+  constructor throwables are discards)
 - Refines: ADR-0008 (scope principles)
 
 ## 1. Runtime and packaging
@@ -26,8 +28,9 @@ may span several patch releases).
 - **Stage 1 (proof of concept)**
   - Runner: `vendor/bin/pront` with discovery, text output and exit codes 0/1/2
     (ADR-0013); `pront.php` configuration limited to `paths` and `exclude`.
-  - Verification: `#[Verify]` with `iterations` (default 100, ADR-0010) and
-    `seed`; replay tokens and `--replay` (ADR-0011); ChoiceBuffer and shrinker.
+  - Verification: `#[Verify]` with `iterations` (default 100, ADR-0010),
+    `edgeRatio` (ADR-0010 section 4; follows in #37) and `seed`; replay tokens
+    and `--replay` (ADR-0011); ChoiceBuffer and shrinker.
   - Types: `bool`, `int`, `float`, `string`, `?T`, unions, literals, `list`,
     `non-empty-list<T>`, array shapes, `array<K, V>` (K is `int|string`),
     `int<min, max>`, `positive-int`, `non-negative-int`, `negative-int`,
@@ -36,15 +39,17 @@ may span several patch releases).
     int range (`'123'`, `'-5'`; unlike `'08'`, `'-0'`, `'1.5'`), because PHP
     would turn it into an int key. Stage 1 checks return types from this list
     plus `void`, `never`, `null`, `mixed`, `self`, `static` and non-generic
-    class or interface names; everything else is reported as "unchecked"
-    (ADR-0009 section 2).
+    class or interface names; everything else, `$this` and `object` included,
+    is reported as "unchecked" (ADR-0009 section 2).
   - Targets: static methods, and instance methods of classes whose public
     constructor takes no parameters or only parameters of the types above (the
     Stage 1 subset of ADR-0010 section 2); an enum method runs on one drawn
     case. A parameter of any other class type, and a private or abstract
     constructor (including a protected one or one of an abstract class), is a
-    pre-run error until Stage 2. A constructor exception is
-    a discard, counted toward the discard threshold (ADR-0010 section 4).
+    pre-run error until Stage 2. A constructor exception (an `Exception`,
+    `ValueError` or `AssertionError`; any other `Error` is a failure, ADR-0010
+    section 2) is a discard, counted toward the discard threshold (ADR-0010
+    section 4).
   - Conditions: `#[Ensures]` with `$return`, the method's parameters and
     `$self`. A condition that references `$old` is a pre-run error ("from
     Stage 2", when equality ships).

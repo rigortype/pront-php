@@ -2,12 +2,20 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Amended: 2026-11-08 (Stage 1 findings: Attribute placement errors, reserved prefixed names, the
+  "cannot accept" check, "unverifiable", the return oracle's acceptance, unchecked exceptions;
+  by-reference target parameters are a Stage 1 pre-run error; an unverifiable trial does not end the
+  target's trials)
 - Refines: ADR-0008 (Pillars 1, 3, 5)
 
 ## 1. Attributes on the implementation
 Attributes on the implementation are the primary mechanism. Declaring
 properties from the test-class side is a possible future extension, not a
 non-goal.
+
+A Pront Attribute on a trait method (reported once, on the trait), a
+`#[Verify]` on a non-public method, and one on a constructor or destructor are
+pre-run errors.
 
 ## 2. Type vocabulary
 - The vocabulary is PHPStan's built-in types. Where it needs extending, the
@@ -29,6 +37,11 @@ non-goal.
   no runtime check for it; ADR-0014 fixes the checked set per stage (Stage 1:
   the input types, `void`, `never`, `null`, `mixed`, `self`, `static` and
   non-generic class or interface names).
+- The return-type oracle decides with PHPStan's `accepts` under strict types,
+  not `isSuperTypeOf`: `float` accepts an `int` (as PHP widens it), an
+  integral float literal type (`1.0`) accepts the equal `int`, and a
+  `Stringable` is not a `string`, even when the target's file is not in strict
+  mode.
 
 ## 3. Tautology test and catalog audit
 An Attribute that restates what types, language features or PHPDoc tags
@@ -75,7 +88,9 @@ Binding rules:
 - Parameters bind **by name**. Reserved names: `$return`, `$self` (the
   receiver), `$old`; each is also available as a prefixed alias that is never
   ambiguous unless a method parameter has the same prefixed name, which is a
-  pre-run error: `$__return`, `$__self`, `$__old`. Any other name must be a
+  pre-run error on a method that carries an `#[Ensures]` (on any other method
+  it is an ordinary parameter name, as is any other `$__name`): `$__return`,
+  `$__self`, `$__old`. Any other name must be a
   parameter of the method that carries the Attribute, otherwise it is a
   pre-run error. If the method has a parameter named like a reserved name, the
   unprefixed name in a condition binds to that method parameter and the
@@ -89,8 +104,36 @@ Binding rules:
   `$__return` on a `void` or `never` method, and `$self`, `$old` or their
   aliases on a static method, is a pre-run error.
   So is a condition parameter that is by-reference, variadic, or whose
-  declared type statically cannot accept the bound value; a `TypeError` that
-  only appears at run time makes the trial *unverifiable* (ADR-0013).
+  declared type statically cannot accept the bound value. "Cannot accept" is
+  decided on the condition parameter's native type only, in strict mode (an
+  `int` widens to `float`); a type Stage 1 cannot model, or an overlap it
+  cannot decide, is not a pre-run error. A `TypeError` that only appears at run
+  time makes the trial *unverifiable* (ADR-0013). Only the `TypeError` raised
+  while binding a value to a condition parameter is unverifiable; a `TypeError`
+  from code the condition calls, or from the condition's own return type, is a
+  failure of the condition (a counterexample). An unverifiable trial does not
+  end the target's trials: it is recorded (counted, with the first one's
+  replay token) and counts toward `iterations`, and the remaining trials still
+  search for a real counterexample. A real counterexample takes precedence:
+  it is the one shrunk and reported, and the unverifiable trials are listed
+  beside it (exit 1, ADR-0013). Only when the target's trials found no real
+  counterexample is the target reported unverifiable (its first unverifiable
+  trial shrunk and reported, exit 2 unless another target found a
+  counterexample). Shrinking an unverifiable trial accepts only candidates with
+  the same failure signature (ADR-0011), but a real failure met by one of its
+  candidates (a failure that is not unverifiable) is never dropped: it is
+  promoted to the target's counterexample, shrunk with a fresh budget and
+  reported by the normal path (exit 1), and the unverifiable trial is listed
+  beside it with its original replay token. The first such candidate ends the
+  unverifiable trial's shrinking, so there is at most one promotion. The rule
+  covers every kind of unverifiable trial, including the comparison and
+  snapshot cases of ADR-0010 section 3. Stage 1 as merged still ends the
+  target's trials at the first unverifiable trial; this follows in #38.
+- Conditions bind the generated argument values, before the call. A target
+  parameter passed by reference is a pre-run error in Stage 1 (a condition
+  would see the pre-call value even when the method changed it); post-call
+  binding is decided with the `$old` snapshot (#1). Stage 1 as merged does not
+  reject it yet; this follows in #41.
 - Names bind against the method that carries the Attribute. When the contract
   is applied to an implementation whose parameters are renamed, the parent's
   parameters are mapped to the implementation's by **position**.
@@ -105,11 +148,16 @@ Binding rules:
 
 ## 5. `@throws`
 `@throws` follows PHPStan's `@throws` semantics (PHPStan's own
-checked/unchecked exception configuration is not read). Only methods that
-declare
-`@throws` are checked (`@throws void` means nothing is thrown): an undeclared
-`Exception` is a failure. Methods without `@throws` are not checked for
-`Exception`; users are never asked to write `@throws` for Pront's sake.
+checked/unchecked exception configuration is not read). The tag is
+`@phpstan-throws` when present, otherwise `@throws` (ADR-0003). Only methods
+that declare `@throws` are checked (`@throws void` declares nothing, so every
+throwable fails): an undeclared `Exception` is a failure, and a declared one
+passes (the return type and `Ensures` are then not evaluated). Methods without
+`@throws` are not checked for `Exception`: such a trial passes, and the
+exception is counted per target and listed in the report as "unchecked" (never
+a silent pass, and not a discard, which could trip the discard threshold);
+`--strict` does not turn it into exit 2 (ADR-0013). Users are never asked to
+write `@throws` for Pront's sake.
 `Error` subclasses (`TypeError`, `DivisionByZeroError`, `ValueError`, ...)
 raised for inputs inside the declared types are failures unless declared in
 `@throws`.
