@@ -153,6 +153,122 @@ final class ChoiceBufferTest extends TestCase
         $draw(ChoiceBuffer::replay($draws));
     }
 
+    /**
+     * The invalid replays above, each recorded with the kind it is read as: a repairing buffer
+     * clamps them to the nearest valid position.
+     *
+     * @return iterable<string, array{list<Draw>, \Closure(ChoiceBuffer): mixed, mixed, list<int>}>
+     */
+    public static function repairs(): iterable
+    {
+        yield 'int past max' => [[new Draw(DrawKind::Int, [5, 0])], static fn(ChoiceBuffer $b) => $b->drawInt(-4, 4), 4, [4, 0]];
+        yield 'int empty side' => [[new Draw(DrawKind::Int, [2, 1])], static fn(ChoiceBuffer $b) => $b->drawInt(0, 9), 3, [3, 0]];
+        yield 'bool 2' => [[new Draw(DrawKind::Bool, [2])], static fn(ChoiceBuffer $b) => $b->drawBool(), true, [1]];
+        yield 'index past count' => [[new Draw(DrawKind::Index, [3])], static fn(ChoiceBuffer $b) => $b->drawIndex(3), 2, [2]];
+        yield 'length past max' => [[new Draw(DrawKind::Length, [17])], static fn(ChoiceBuffer $b) => $b->drawLength(0), 16, [16]];
+        yield 'length past max with min' => [[new Draw(DrawKind::Length, [4])], static fn(ChoiceBuffer $b) => $b->drawLength(2, 5), 5, [3]];
+        yield 'selector past edges' => [[new Draw(DrawKind::Selector, [3])], static fn(ChoiceBuffer $b) => $b->drawSelector(2, 0.1), 1, [2]];
+        yield 'nullable 2' => [[new Draw(DrawKind::Nullable, [2])], static fn(ChoiceBuffer $b) => $b->drawIsNull(), false, [1]];
+        yield 'character past ordering' => [
+            [new Draw(DrawKind::Character, [0x10F800])],
+            static fn(ChoiceBuffer $b) => $b->drawCharacter(),
+            \Pront\ChoiceBuffer\Characters::codePointAt(0x10F7FF),
+            [0x10F7FF],
+        ];
+        yield 'float kind 3' => [[new Draw(DrawKind::Float, [3, 1])], static fn(ChoiceBuffer $b) => var_export($b->drawFloat(), true), 'NAN', [2, 1]];
+        yield 'float edge past table' => [[new Draw(DrawKind::Float, [2, 7])], static fn(ChoiceBuffer $b) => $b->drawFloat(), PHP_FLOAT_MAX, [2, 6]];
+        yield 'float kind 0 past range' => [
+            [new Draw(DrawKind::Float, [0, FloatCodec::KIND0_LIMIT + 5, 0])],
+            static fn(ChoiceBuffer $b) => $b->drawFloat(),
+            (float) FloatCodec::KIND0_LIMIT,
+            [0, FloatCodec::KIND0_LIMIT, 0],
+        ];
+        yield 'float kind 1 low past range' => [
+            [new Draw(DrawKind::Float, [1, 0x40091EB8, 0x100000000, 0])],
+            static fn(ChoiceBuffer $b) => $b->drawFloat(),
+            FloatCodec::fromBits((0x40091EB8 << 32) | 0xFFFFFFFF),
+            [1, 0x40091EB8, 0xFFFFFFFF, 0],
+        ];
+        yield 'float kind 1 sign 2' => [
+            [new Draw(DrawKind::Float, [1, 0x40091EB8, 0x51EB851F, 2])],
+            static fn(ChoiceBuffer $b) => $b->drawFloat(),
+            -3.14,
+            [1, 0x40091EB8, 0x51EB851F, 1],
+        ];
+    }
+
+    /**
+     * @param list<Draw> $draws
+     * @param \Closure(ChoiceBuffer): mixed $draw
+     * @param list<int> $slots
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('repairs')]
+    public function testRepairingClampsDrawsOfTheRecordedKind(array $draws, \Closure $draw, mixed $expected, array $slots): void
+    {
+        $buffer = ChoiceBuffer::repairing($draws);
+        self::assertSame($expected, $draw($buffer));
+        self::assertTrue($buffer->repaired());
+        self::assertSame([$slots], $buffer->consumedSlots());
+        self::assertSame($draws[0]->kind, $buffer->consumed()[0]->kind);
+    }
+
+    /**
+     * The repair rows recorded under another kind (as when an edit shifted the draw there): every
+     * other kind is tried, and none is clamped.
+     *
+     * @param list<Draw> $draws
+     * @param \Closure(ChoiceBuffer): mixed $draw
+     * @param mixed $expected the repaired value of the row, not reached here
+     * @param list<int> $slots the repaired slots of the row, not reached here
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('repairs')]
+    public function testRepairingDoesNotClampDrawsOfAnotherKind(array $draws, \Closure $draw, mixed $expected, array $slots): void
+    {
+        foreach (DrawKind::cases() as $kind) {
+            if ($kind === $draws[0]->kind) {
+                continue;
+            }
+            try {
+                $draw(ChoiceBuffer::repairing([new Draw($kind, $draws[0]->slots)]));
+                self::fail("a slot recorded as {$kind->name} was clamped");
+            } catch (InvalidChoice) {
+                $this->addToAssertionCount(1);
+            }
+        }
+    }
+
+    /**
+     * @return iterable<string, array{list<int>}>
+     */
+    public static function unrepairableKindOne(): iterable
+    {
+        yield 'zero pattern' => [[1, 0, 0, 0]];
+        // Every pattern whose high slot is at its limit is non-finite.
+        yield 'high past its range' => [[1, 0x80000000, 0, 0]];
+        yield 'high at its limit' => [[1, 0x7FFFFFFF, 5, 0]];
+    }
+
+    /**
+     * @param list<int> $slots
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('unrepairableKindOne')]
+    public function testRepairingCannotFixAKindOnePatternWithoutEncoding(array $slots): void
+    {
+        $this->expectException(InvalidChoice::class);
+        ChoiceBuffer::repairing([new Draw(DrawKind::Float, $slots)])->drawFloat();
+    }
+
+    public function testRepairingAValidRecordingIsAReplay(): void
+    {
+        $fresh = ChoiceBuffer::fresh(Prng::forTrial(7, 3));
+        $values = self::generate($fresh);
+        $repairing = ChoiceBuffer::repairing($fresh->consumed());
+
+        self::assertSame($values, self::generate($repairing));
+        self::assertFalse($repairing->repaired());
+        self::assertEquals($fresh->consumed(), $repairing->consumed());
+    }
+
     public function testMalformedRecordingsAreRejected(): void
     {
         $this->expectException(\InvalidArgumentException::class);

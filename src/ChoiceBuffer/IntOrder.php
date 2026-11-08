@@ -66,6 +66,33 @@ final class IntOrder
     }
 
     /**
+     * A valid position for (`$magnitude`, `$side`), for a repairing replay. It stays on its side
+     * when it can, as the clamp of a slot to its new range: a side above 1 becomes 1; side 1, when
+     * the range holds no value below the origin, moves to side 0 at the same distance; then a
+     * magnitude past its side's limit is lowered to that limit (the farthest value on that side),
+     * even when the other side holds a value at a nearer distance. A valid position is returned
+     * unchanged.
+     *
+     * @param int<0, max> $magnitude
+     * @return array{int<0, max>, 0|1} [magnitude, side]
+     */
+    public static function clamp(int $magnitude, int $side, int $min, int $max): array
+    {
+        $origin = self::origin($min, $max);
+        $side = $side === 0 ? 0 : 1;
+        if (self::magnitudeLimit($side, $origin, $min, $max) < 0) {
+            // Side 1 at magnitude m is distance m + 1, side 0 at m + 1 is the same distance;
+            // side 0 always holds the origin, so only side 1 can be empty.
+            $magnitude = $magnitude === PHP_INT_MAX ? $magnitude : $magnitude + 1;
+            $side = 0;
+        }
+        /** @var int<0, max> $limit side 0 holds the origin; side 1 is non-empty here */
+        $limit = self::magnitudeLimit($side, $origin, $min, $max);
+
+        return [min($magnitude, $limit), $side];
+    }
+
+    /**
      * The largest magnitude valid on `$side`; -1 when the side holds no value.
      */
     private static function magnitudeLimit(int $side, int $origin, int $min, int $max): int
