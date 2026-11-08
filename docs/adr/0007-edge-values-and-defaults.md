@@ -52,9 +52,11 @@ indicators), `か` + `U+3099` differs byte-wise from `が`, and `"\xff"` is not 
   key `0`), and a key is never drawn in a form PHP converts to an integer key (ADR-0014 section 3), so
   keys cause no discard. This replaces the earlier rule that rejected such a key and counted it toward
   the discard threshold, under which rejections compounded with nesting (`list<list<array<string,
-  int>>>` measured about 305 discards per 100 accepted values). Stage 1 as merged still rejects; the
-  key draw follows in #35. For `array<int|string, V>` a converted key is kept as the int key the type
-  admits. A repeated key overwrites, so an array may be shorter than its drawn length.
+  int>>>` measured about 305 discards per 100 accepted values). The rule holds for every key type with
+  a `string` member: a string key PHP would convert is kept as its int key only when the key type
+  admits that int (`array<int|string, V>`), and is otherwise never drawn (`array<string, V>`, and
+  `array<int<0, 5>|string, V>` for `'7'`). Stage 1 as merged still rejects such keys; the key draw
+  follows in #35. A repeated key overwrites, so an array may be shorter than its drawn length.
 
 ### 2. Provisional defaults (review point: after Stage 1 runs on real code)
 - `iterations`: 100. Edge-value ratio: 10%; for floats it is the probability of `kind` 2 (ADR-0002
@@ -73,6 +75,7 @@ indicators), `か` + `U+3099` differs byte-wise from `が`, and `"\xff"` is not 
 | --- | --- |
 | Generate invalid UTF-8 by default | Most code under test expects text; the byte-string case belongs to explicit edge values. |
 | Count string length in code points or graphemes | PHP's `strlen` and PHPStan's string types are byte-based. |
+| Reject a generated `string` key that PHP converts to an int and count it as a discard (the rule until 2026-11-08) | Rejection applies to the whole input and compounds with nesting; nested key types exceeded the discard threshold. |
 
 ## Consequences
 

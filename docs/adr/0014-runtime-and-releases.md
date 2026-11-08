@@ -28,8 +28,8 @@ may span several patch releases).
 - **Stage 1 (proof of concept)**
   - Runner: `vendor/bin/pront` with discovery, text output and exit codes 0/1/2
     (ADR-0013); `pront.php` configuration limited to `paths` and `exclude`.
-  - Verification: `#[Verify]` with `iterations` (default 100, ADR-0010) and
-    `seed`; replay tokens and `--replay` (ADR-0011); ChoiceBuffer and shrinker.
+  - Verification: `#[Verify]` with `iterations` (default 100, ADR-0010),
+    `edgeRatio` (ADR-0010 section 4; follows in #37) and `seed`; replay tokens and `--replay` (ADR-0011); ChoiceBuffer and shrinker.
   - Types: `bool`, `int`, `float`, `string`, `?T`, unions, literals, `list`,
     `non-empty-list<T>`, array shapes, `array<K, V>` (K is `int|string`),
     `int<min, max>`, `positive-int`, `non-negative-int`, `negative-int`,

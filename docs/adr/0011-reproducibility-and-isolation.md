@@ -34,11 +34,14 @@
   evaluation, a replay of the failing buffer, does not reproduce the failure
   (nothing is then shrunk), even if all N re-runs reproduce it. Stage 1 as
   merged reports that case as a plain failure; the rule follows in #36.
+  Reporting it as a plain failure when all re-runs reproduce was rejected: the
+  failing buffer has then already not failed consistently.
 - **Same failure.** The shrinker accepts a candidate only if it "still fails"
   (ADR-0002), and a re-run reproduces only the same failure. Two failures are
   the same when their *failure signatures* are equal strings. A thrown
-  failure's signature is the exception class, the file and line of the throw
-  site, and the file, line and function of every frame between the throw site
+  failure's signature is the exception class, the file and line where the
+  throwable was created (PHP records its file, line and trace at `new`, not at
+  `throw`), and the file, line and function of every frame between that site
   and the code that classifies it, minus the harness frames (those shared with
   the classifier's own stack, and those above the harness's call into user
   code); it never contains the message or the arguments, which usually embed

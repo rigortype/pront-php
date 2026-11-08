@@ -45,13 +45,16 @@ parent contract allows is a *violation*, not a discard (ADR-0012).
 
 **Pre-run error** — a problem found before any trial runs (an unsupported or contradictory type, a
 condition that cannot bind, a misplaced Attribute, an ungeneratable input). Every one is collected and
-listed; it aborts only its own target (a link-time fatal while loading ends the run, ADR-0004 item 7) and makes exit code 2 (ADR-0013). _Avoid_: "warning" (it is never
+listed; it aborts only its own target (a link-time fatal while loading ends the run, ADR-0004 item 7)
+and makes exit code 2, or 1 if a counterexample was found (ADR-0013). _Avoid_: "warning" (it is never
 ignored), "skip".
 
 **Failure signature** — the string that identifies a failure for "same failure": exception class,
-throw site and the frames up to the classifier, never the message or the input (ADR-0011).
+the site where the throwable was created and the frames up to the classifier, never the message or the input (ADR-0011).
 
-**Unchecked** — a return-type fragment that cannot be verified at runtime; reported, never skipped
+**Unchecked** — a return-type fragment that cannot be verified at runtime (a `--strict` item), or an
+`Exception` thrown by a method with no `@throws` (counted and listed, not a `--strict` item,
+ADR-0009 section 5); reported, never skipped
 silently (ADR-0009).
 
 **Skipped: unbuildable** — an implementation Pront cannot construct; listed, not failed (ADR-0012).

@@ -34,8 +34,8 @@ functions also run after `exit` and `die`.
    has its own PRNG stream, seeded from the target's seed and `k`. The target's seed is
    `#[Verify(seed:)]` when set, otherwise derived from the run seed and the target name. The stream is by a fixed derivation named by the algorithm
    identifier. Stage 1's identifier is `pront-1` (`Algorithm::ID`); it covers the trial-stream and
-   target-seed derivations (SHA-256 with a domain prefix over 64-bit little-endian integers, used as
-   Xoshiro256** state), Pront's range mapping, the slot encodings and orderings, the edge tables, and
+   target-seed derivations (SHA-256 with a domain prefix over 64-bit little-endian integers, and for
+   the target seed also the target name; used as Xoshiro256** state), Pront's range mapping, the slot encodings and orderings, the edge tables, and
    the draw order (within one trial the receiver first, then the parameters in declaration order).
    `k` counts from 1. Any change to one of these is an identifier bump (ADR-0011). `k` is scoped to one target, so one target's shrinking never changes another's inputs. A fresh trial is therefore regenerated from (seed, k) alone, without re-running earlier
    trials' user code.
@@ -54,7 +54,8 @@ functions also run after `exit` and `die`.
    `begin` and `end`. At run start, files not locked by a live run are rotated: the newest 20 are
    kept; only files that are `done`, already reported, or hold no attempt in flight (every `begin`
    has an `end`: a run killed between attempts, or ended by an uncaught Pront exception) are deleted.
-   (Stage 1 as merged keeps the last kind; deleting it follows in #42.)
+   (Pending the user's ratification: Stage 1 as merged deletes files with no attempt at all, but keeps
+   files whose attempts all ended; deleting those follows in #42.)
 6. **Shutdown function.** The runner registers one shutdown function at run start. If an attempt is
    in flight (a `begin` without an `end`), it first raises the limit with
    `ini_set('memory_limit', '-1')` (so it works after memory exhaustion), then records the `fatal`

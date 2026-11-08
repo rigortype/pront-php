@@ -66,7 +66,8 @@ mixed with uniform random values by default, inside the generators.
 - Only edge values inside the permitted range are candidates; out-of-range
   ones are dropped, never clamped. The range's own endpoints are edge values.
 - "Edge or uniform" is itself the first draw recorded in the choice buffer;
-  value 0 means uniform. An edge value takes one draw and is minimal by design
+  value 0 means uniform. An edge value takes one draw (except a list or array
+  length from algorithm `pront-2` on, ADR-0002 section 2) and is minimal by design
   under the ADR's ordering; the shrinker tries every lower selector value and
   then lowers the position. Reproducibility and shrinking are preserved (ADR-0011).
 - Initial defaults (provisional; tuning owned by an ADR): iterations 100, edge
@@ -75,7 +76,10 @@ mixed with uniform random values by default, inside the generators.
   only; the CLI has no option for either, so replay tokens never carry a
   run-wide ratio, and a token without a buffer regenerates its input with the
   ratio the target's `#[Verify]` has at replay time. Stage 1 as merged has
-  `iterations` but not yet `edgeRatio` (always 10%); it follows in #37.
+  `iterations` but not yet `edgeRatio` (always 10%); it follows in #37. A
+  CLI option for the ratio or iterations was rejected: a run-wide ratio
+  changes what a buffer-less replay token regenerates unless the token carries
+  it, and the contract belongs on the target.
 
 ## 5. Dependent generation and rejection
 - `callable` parameters are a pre-run error ("unsupported until the

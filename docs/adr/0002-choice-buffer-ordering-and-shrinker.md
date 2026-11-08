@@ -60,12 +60,14 @@ the draw's range.
   string generator encodes it as UTF-8.
 - **length** (string, list, array): the range's minimum length is 0 in the ordering, then ascending.
   For `non-empty-*` the minimum is 1. A string length counts characters at draw time (ADR-0007).
-  From algorithm identifier `pront-2` on, a length always records two draws: its edge-or-uniform
-  selector, then a uniform length draw over the permitted range, read and recorded even when the
-  selector picks an edge length (its value is then unused). Replacing an edge length by a uniform one
-  therefore keeps the buffer length, so selector lowering, slot lowering and block deletion can reach
-  a shorter uniform length (under `pront-1` a length at an edge, for example 16, is one draw and can
-  never become a two-draw uniform length, so shrinking stops there). This is the accepted design;
+  From algorithm identifier `pront-2` on, the length of a list or array (the values whose edge list
+  is a list of lengths) always records two draws: its edge-or-uniform selector, then a uniform length
+  draw over the permitted range, read and recorded even when the selector picks an edge length (its
+  value is then unused). Replacing an edge length by a uniform one therefore keeps the buffer length,
+  so selector lowering, slot lowering and block deletion can reach a shorter uniform length. Under
+  `pront-1` a length at an edge (for example 16) is one draw: selector lowering reaches the lower edge
+  lengths, but never a two-draw uniform length. A string is unchanged: its selector picks an edge
+  string, and a uniform string draws its length after selector 0. This is the accepted design;
   `pront-1` (Stage 1 as merged) draws the uniform length only after selector 0, and the
   implementation follows in #34.
 - **edge-or-uniform selector**: the first draw of each value (ADR-0010 section 4). Slot 0 means uniform;
@@ -106,19 +108,26 @@ is simpler; at equal length, compare draw by draw by position in the ordering.
    that no longer fits is clamped to its new range and the candidate is re-run. A repaired candidate
    is kept only if it still fails (ADR-0011 section 1). Repair applies only when the draw read at a
    position has the kind recorded there (its range changed); a slot that an edit shifted onto a draw
-   of another kind is not repaired, and if it does not fit, the candidate is invalid. A `kind` 1 float
-   pattern that section 2 rejects is never repaired. Only a shrink candidate's replay, and a replay
-   token that carries a buffer (ADR-0011), repair (`ChoiceBuffer::repairing`); a plain replay of a
-   recorded buffer never repairs and throws on an out-of-range slot.
+   of another kind is not repaired, and if it does not fit, the candidate is invalid. Repair clamps a
+   slot to the nearest valid position of its draw: an int position, a length, an index, a bool, a
+   nullable flag, a selector, a character, a float `kind` above 2 (to `kind` 2 with its index
+   clamped), a float edge index, and the low magnitude and sign slots of a `kind` 1 float. A `kind` 1
+   high slot is never clamped (every pattern with it at its limit is non-finite), and a `kind` 1
+   pattern that section 2 rejects is never repaired. Every attempt that runs a recorded buffer
+   repairs (`ChoiceBuffer::repairing`): a shrink candidate, a flaky re-run, a replay token that
+   carries a buffer (ADR-0011), and the rendering of a counterexample. A non-repairing read of a
+   recorded buffer (`ChoiceBuffer::replay`) throws on an out-of-range slot.
 
 When the generator reads past the end of the buffer, the missing slots read as 0 (the simplest value),
 not as a failure of the candidate. A float whose `kind` 1 payload is invalid only because at least one
 of its slots was read past the end (the all-zero payload is the pattern of `0.0`, which `kind` 1
 rejects) decodes as the all-zero draw `0.0` and is recorded as `[0, 0, 0]`; a fully recorded invalid
-payload, or an out-of-range slot, still makes the candidate invalid. Shortlex compares, and the shrinker stores, the *consumed* buffer:
+payload still makes the candidate invalid, and so does an out-of-range slot that repair does not
+clamp. Shortlex compares, and the shrinker stores, the *consumed* buffer:
 the slots the generator actually read, with zero-filled slots written out. A candidate whose consumed
 buffer is not simpler is rejected, so every accepted step strictly decreases and shrinking terminates
-without relying on the budget. Edge values take one draw and are therefore minimal by design: a
+without relying on the budget. Edge values take one draw (except list and array lengths from
+`pront-2` on, section 2) and are therefore minimal by design: a
 well-known small value is simpler than a random one (ADR-0010 section 4). The selector is tried at every
 lower value, not only its neighbour. A candidate with an out-of-range slot that cannot be
 repaired is discarded.
